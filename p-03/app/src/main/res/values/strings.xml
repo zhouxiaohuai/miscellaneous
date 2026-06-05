@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">全局朗读助手</string>
+
+    <!-- 无障碍服务描述 -->
+    <string name="accessibility_service_description">全局朗读助手需要无障碍服务来读取屏幕上的文字内容，以便为您朗读。开启后，您可以点击屏幕上的任意文字，应用会自动识别并朗读出来。</string>
+    <string name="accessibility_service_summary">用于读取屏幕文字并朗读</string>
+
+    <!-- 权限相关 -->
+    <string name="overlay_permission_title">需要悬浮窗权限</string>
+    <string name="overlay_permission_message">为了在其他应用上显示朗读按钮，需要授予悬浮窗权限。</string>
+
+    <string name="accessibility_permission_title">需要开启无障碍服务</string>
+    <string name="accessibility_permission_message">为了读取屏幕上的文字，需要开启无障碍服务。\n\n请在设置中找到「全局朗读助手」并开启。</string>
+
+    <string name="huawei_background_title">华为手机特别设置</string>
+    <string name="huawei_background_message">为了保证朗读服务持续运行，请按照以下步骤设置：\n\n1. 打开「手机管家」\n2. 点击「启动管理」\n3. 找到「全局朗读助手」\n4. 关闭「自动管理」\n5. 手动开启：\n   ✓ 允许自启动\n   ✓ 允许关联启动\n   ✓ 允许后台活动</string>
+
+    <!-- 按钮文字 -->
+    <string name="btn_check_permissions">检查权限</string>
+    <string name="btn_start">开始使用</string>
+    <string name="btn_go_settings">去设置</string>
+    <string name="btn_cancel">取消</string>
+    <string name="btn_confirm">确定</string>
+    <string name="btn_later">稍后设置</string>
+    <string name="btn_i_know">我知道了</string>
+
+    <!-- 状态文字 -->
+    <string name="status_granted">✅ 已授予</string>
+    <string name="status_not_granted">❌ 未授予</string>
+    <string name="status_enabled">✅ 已开启</string>
+    <string name="status_not_enabled">❌ 未开启</string>
+    <string name="status_set">✅ 已设置</string>
+    <string name="status_not_set">❌ 未设置</string>
+
+    <!-- 提示信息 -->
+    <string name="toast_service_started">服务已启动！</string>
+    <string name="toast_service_enabled">朗读服务已开启</string>
+    <string name="toast_service_disabled">朗读服务已关闭</string>
+    <string name="toast_permissions_required">请先完成权限设置</string>
+
+    <!-- 使用说明 -->
+    <string name="usage_instructions">1. 授予以上所有权限\n\n2. 点击「开始使用」按钮\n\n3. 打开任意应用（微信、浏览器等）\n\n4. 点击屏幕上的文字即可朗读\n\n5. 点击悬浮按钮可开启/关闭朗读</string>
+
+    <string name="footer_hint">⚠️ 首次使用请先完成权限设置</string>
+
+    <!-- 通知 -->
+    <string name="notification_channel_name">朗读服务</string>
+    <string name="notification_channel_description">全局朗读助手运行中</string>
+    <string name="notification_title">全局朗读助手</string>
+    <string name="notification_text">服务运行中，点击文字即可朗读</string>
+</resources>

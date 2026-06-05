@@ -1,0 +1,843 @@
+# Java 全栈学习 — 知识点总结提炼
+
+> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17 | 89 个源文件
+> 最后更新：2026-06-05
+
+---
+
+## 项目全景
+
+```
+p-02 (89 files)
+├── 事务模块 (13 services + 4 controllers)     ← 核心深度
+├── Redis 模块 (5 services)                    ← 已实现
+├── 架构模式模块 (18 files)                     ← 已实现
+├── JVM 模块 (14 files)                        ← 新增
+└── 配置 + 实体 + ORM (15 files)               ← 基础设施
+```
+
+---
+
+## 一、Spring 事务管理（核心深度）
+
+### 1.1 事务生命周期 — 6 阶段
+
+```
+解析 → 拦截 → 获取事务 → 执行业务 → 提交/回滚 → 清理
+```
+
+| 阶段 | 做什么 | 关键类 |
+|------|--------|--------|
+| 解析 | 读取 @Transactional 注解属性 | `AnnotationTransactionAttributeSource` |
+| 拦截 | AOP 代理拦截方法调用 | `TransactionInterceptor` |
+| 获取 | 新建或加入已有事务 | `PlatformTransactionManager.getTransaction()` |
+| 执行 | 运行业务代码 | 目标方法 |
+| 提交/回滚 | 正常返回→提交，RuntimeException→回滚 | `commit()` / `rollback()` |
+| 清理 | 清理 ThreadLocal，恢复挂起事务 | `TransactionSynchronizationManager` |
+
+**代码体现**：`TransactionLifecycleService` — 声明式（@Transactional）和编程式（手动 get/commit/rollback）两种方式对比。
+
+### 1.2 七种传播行为
+
+| 传播行为 | 外部有事务 | 外部无事务 | 一句话 |
+|---------|-----------|-----------|--------|
+| **REQUIRED**（默认） | 加入 | 新建 | 共进退 |
+| **REQUIRES_NEW** | 挂起，新建 | 新建 | 各自独立 |
+| **SUPPORTS** | 加入 | 非事务 | 随大流 |
+| **NOT_SUPPORTED** | 挂起，非事务 | 非事务 | 我不要事务 |
+| **MANDATORY** | 加入 | **抛异常** | 必须有事务 |
+| **NEVER** | **抛异常** | 非事务 | 必须没事务 |
+| **NESTED** | Savepoint | 新建 | 部分回滚 |
+
+**关键对比**：`REQUIRES_NEW` vs `NESTED`
+- REQUIRES_NEW：完全独立事务，需额外数据库连接，外层回滚不影响已提交的内层
+- NESTED：同一事务的 Savepoint，共用连接，外层回滚内层一起回滚
+
+**代码体现**：`PropagationService` — 每种传播行为都有 outer/inner 方法组合演示。
+
+### 1.3 四种隔离级别
+
+| 隔离级别 | 脏读 | 不可重复读 | 幻读 | MySQL 默认 |
+|---------|------|-----------|------|-----------|
+| READ_UNCOMMITTED | ✅可能 | ✅可能 | ✅可能 | 否 |
+| READ_COMMITTED | ❌避免 | ✅可能 | ✅可能 | 否（PG默认） |
+| REPEATABLE_READ | ❌避免 | ❌避免 | ✅可能 | **✅是** |
+| SERIALIZABLE | ❌避免 | ❌避免 | ❌避免 | 否 |
+
+> InnoDB 在 REPEATABLE_READ 下通过 MVCC + Next-Key Lock 大幅减少幻读。
+
+**代码体现**：`IsolationService` — init/reset/getCurrent 配合并发测试。
+
+### 1.4 十二种事务失效场景
+
+这是项目最核心的知识点，每种都有错误代码 + 原因分析 + 正确修复：
+
+| # | 场景 | 根因 | 修复 |
+|---|------|------|------|
+| 1 | 非 public 方法 | AOP 只拦截 public | 改 public |
+| 2 | **自调用（this）** | 绕过代理 | 注入自身代理 / AopContext |
+| 3 | catch 未抛出 | Spring 看不到异常 | catch 后 throw |
+| 4 | checked 异常 | 默认只回滚 RuntimeException | `rollbackFor=Exception.class` |
+| 5 | rollbackFor 配错 | 类型不匹配 | 统一用 `Exception.class` |
+| 6 | MyISAM | 不支持事务 | 改 InnoDB |
+| 7 | 未被 Spring 管理 | 手动 new | @Component + 注入 |
+| 8 | **多线程** | ThreadLocal 跨线程丢失 | 避免事务内开线程 |
+| 9 | propagation 错误 | NOT_SUPPORTED 挂起事务 | 正确选择传播行为 |
+| 10 | final/static | CGLIB 无法重写 | 避免 |
+| 11 | 类未被代理 | 不在扫描路径 | @Component + 正确包路径 |
+| 12 | @Async + @Transactional | 切面顺序 | @Order 控制 |
+
+**代码体现**：`TransactionFailService` — 12 个 failXX 方法 + 对应正确写法。
+
+### 1.5 编程式事务 — 两种 API
+
+| API | 抽象层级 | 适用场景 |
+|-----|---------|---------|
+| `TransactionTemplate` | 高（模板模式） | 简单编程式事务 |
+| `PlatformTransactionManager` | 低（手动管理） | 极端复杂场景 |
+
+**核心区别**：声明式事务 = Spring 帮你调 PlatformTransactionManager；编程式事务 = 你自己调。
+
+**代码体现**：`ProgrammaticTransactionService` — template 有返回值/手动回滚，manager 完整流程/嵌套事务。
+
+### 1.6 嵌套事务与 Savepoint
+
+```java
+// NESTED — 内层回滚不影响外层
+@Transactional
+public void outer() {
+    save(user1);
+    try { innerService.nested(); } catch (Exception e) { /* user1 仍提交 */ }
+}
+
+// 手动 Savepoint
+Object sp = status.createSavepoint();
+try { save(user2); } catch (Exception e) { status.rollbackToSavepoint(sp); }
+transactionManager.commit(status);  // user1 保存成功
+```
+
+**代码体现**：`NestedTransactionService` — NESTED 对比 REQUIRES_NEW，手动 savepoint。
+
+### 1.7 只读 / 超时 / 批量
+
+| 特性 | 注解 | 效果 |
+|------|------|------|
+| 只读 | `@Transactional(readOnly=true)` | 跳过脏检查，可路由从库 |
+| 超时 | `@Transactional(timeout=30)` | 超时触发 TransactionTimedOutException |
+| 批量 | 编程式分片提交 | 每 N 条一个事务，失败只回滚当前片 |
+
+**批量三种策略**：
+
+| 策略 | 适用量级 | 风险 |
+|------|---------|------|
+| 单事务批量 | <1000 条 | 全部回滚 |
+| 分批提交 | 1000~10000 条 | 当前批回滚 |
+| 逐条提交 | 关键数据 | 精确控制 |
+
+### 1.8 大事务优化 — 反模式 vs 正确做法
+
+| 反模式 | 正确做法 | 优化原理 |
+|--------|---------|---------|
+| RPC 在事务内 | RPC 移到事务外 | 减少连接占用时间 |
+| N+1 循环查询 | 批量查询+更新 | 减少 SQL 次数 |
+| 整个方法加 @Transactional | 只包裹写操作 | 最小事务范围 |
+| 提前 SELECT FOR UPDATE | 延迟加锁 | 减少锁持有时间 |
+| 同步处理日志/通知 | 异步线程池 | 非核心操作异步化 |
+
+**三层超时控制**：
+1. Spring `@Transactional(timeout=N)` — 应用层
+2. MySQL `innodb_lock_wait_timeout` — 数据库层
+3. HikariCP `maxLifetime` — 连接池层
+
+**代码体现**：`BigTransactionService` — 每个反模式都有对比代码 + 计时。
+
+### 1.9 自定义事务框架 Tx
+
+**解决 @Transactional 的三大局限**：
+
+| 局限 | @Transactional | Tx |
+|------|----------------|-----|
+| 自调用失效 | 依赖 AOP 代理 | 静态方法，不依赖代理 |
+| 方法级边界 | 代理只能前后拦截 | 手动控制事务范围 |
+| 必须 public | CGLIB 限制 | 无代理限制 |
+
+**架构**：
+```
+Tx（门面） → TxBuilder（链式配置） → TxContext（ApplicationContextAware） → PlatformTransactionManager
+```
+
+**使用方式**：
+```java
+Tx.readOnly(() -> findAll());           // 只读
+Tx.writable(() -> save(entity));        // 读写
+Tx.builder().writable().timeout(10)     // 链式配置
+    .propagation(Propagation.REQUIRES_NEW)
+    .executeWithoutResult(() -> { ... });
+```
+
+**核心原理**：`TxContext` 通过 `ApplicationContextAware` 拿到 Spring 容器，静态获取 `PlatformTransactionManager`，在当前线程内手动管理事务。
+
+**代码体现**：`framework/` 包 5 个文件 + `CustomTxService` + `TxAdvancedService`。
+
+---
+
+## 二、ORM 双框架 — JPA + MyBatis
+
+### 2.1 对比总结
+
+| 维度 | JPA/Hibernate | MyBatis |
+|------|--------------|---------|
+| SQL 控制 | 自动生成（JPQL） | 手写 SQL |
+| 适用场景 | 标准 CRUD | 复杂查询 |
+| 事务管理 | JpaTransactionManager | DataSourceTransactionManager |
+| 实体 | @Entity 注解 | 无侵入 |
+| 映射 | 自动（驼峰） | XML/注解 |
+
+**关键结论**：MyBatis 本身不管理事务，事务由 Spring 统一管理。JPA + MyBatis 共存时，`JpaTransactionManager` 兼容两者。
+
+### 2.2 已掌握的 JPA 注解
+
+```
+@Entity @Table @Id @GeneratedValue    — 实体映射
+@ManyToOne(FetchType.LAZY)            — 关联查询
+@Enumerated(EnumType.STRING)          — 枚举存储
+@Modifying @Query @Param              — 自定义更新/查询
+JpaRepository + JpaSpecificationExecutor — 接口继承
+```
+
+### 2.3 已掌握的 MyBatis 映射
+
+```
+<resultMap>       — 结果映射（下划线→驼峰）
+<select>/<insert>/<update> — SQL 定义
+#{param}          — 参数绑定
+balance + #{amount} — 相对更新（非覆盖）
+```
+
+**代码体现**：`entity/` 4 个实体 + `jpa/repository/` 4 个接口 + `mybatis/mapper/` 3 个接口 + 3 个 XML。
+
+---
+
+## 三、Redis 模块（完整实现）
+
+### 3.1 五种数据结构
+
+| 结构 | 核心操作 | 典型场景 |
+|------|---------|---------|
+| String | SET/GET/SETEX/SETNX/INCR/DECR | 缓存、计数器、分布式锁 |
+| List | LPUSH/RPUSH/LPOP/RPOP/LRANGE | 消息队列、最新列表 |
+| Hash | HSET/HGET/HGETALL/HINCRBY | 对象属性存储 |
+| Set | SADD/SMEMBERS/SINTER/SUNION | 标签、共同好友 |
+| ZSet | ZADD/ZRANGE/ZREVRANGE/ZINCRBY | 排行榜、延迟队列 |
+
+### 3.2 缓存策略
+
+| 策略 | 实现方式 | 解决问题 |
+|------|---------|---------|
+| **Cache Aside** | 读：缓存→DB→回填；写：删缓存 | 基础缓存模式 |
+| **空值缓存** | 查询不到时缓存 null（短 TTL） | 缓存穿透 |
+| **布隆过滤器** | BitSet + 双哈希，3 种实现 | 缓存穿透（大规模） |
+| **互斥锁** | SETNX 抢锁重建缓存 | 缓存击穿 |
+| **随机 TTL** | baseTTL + random jitter | 缓存雪崩 |
+
+**布隆过滤器三种实现**：
+1. `BloomFilter` — 标准版，BitSet + 双哈希
+2. `CountingBloomFilter` — 计数器版，支持删除
+3. `ScalableBloomFilter` — 可扩展版，自动增长
+
+### 3.3 分布式锁 — 5 种演进
+
+| # | 实现 | 问题 | 改进 |
+|---|------|------|------|
+| 1 | SETNX | 死锁风险 | 加 TTL |
+| 2 | SETNX + TTL | 误删别人的锁 | 加 UUID 校验 |
+| 3 | SETNX + UUID | 不可重入 | ThreadLocal 计数 |
+| 4 | 可重入锁 | 业务场景 | 防重复提交 |
+| 5 | 秒杀扣库存 | 非原子操作 | Lua 脚本原子化 |
+
+**秒杀 Lua 脚本核心**：`检查库存 → 检查用户是否已购买 → 扣减库存 → 记录用户`，四步原子执行。
+
+### 3.4 限流算法 — 4 种 + Lua 原子版
+
+| 算法 | 原理 | 特点 |
+|------|------|------|
+| **固定窗口** | 计数器，窗口结束重置 | 简单，窗口边界突发 |
+| **滑动窗口** | ZSet 时间戳分数 | 精确，内存较大 |
+| **漏桶** | 固定速率流出 | 平滑，无法应对突发 |
+| **令牌桶** | 固定速率放入令牌 | 平滑 + 允许突发 |
+
+**进阶**：
+- 多层限流：全局 → IP → 用户（三级过滤）
+- Lua 原子版：集群环境下的滑动窗口/固定窗口/多层限流
+- 动态配置：限流参数存 Redis，运行时读取/更新/重置
+
+**代码体现**：`redis/` 包 5 个文件，`RedisController` 约 30 个接口。
+
+---
+
+## 四、设计模式（6 种）
+
+### 4.1 策略模式 — 支付方式
+
+```
+PayStrategy（接口） ← AlipayStrategy / WxPayStrategy / BankPayStrategy
+PayContext（上下文）← List<PayStrategy> 注入 → Map<channel, strategy> → executePay()
+```
+
+**Spring 最佳实践**：`List<T>` 自动注入 + `Collectors.toMap()` 构建策略 Map，新增支付方式只需加 `@Component`。
+
+### 4.2 工厂模式 — 订单创建
+
+```
+Order（sealed interface）← NormalOrder / FlashSaleOrder / GroupOrder（record）
+OrderCreator（接口）← NormalOrderCreator / FlashSaleOrderCreator / GroupOrderCreator
+OrderFactory ← List<OrderCreator> → Map<type, creator> → create()
+```
+
+**Java 17 特性**：`sealed interface` 限制继承 + `record` 不可变 DTO。
+
+### 4.3 观察者模式 — 事件驱动
+
+```
+OrderEvent（sealed interface）← OrderCreated / OrderPaid / OrderCancelled（record）
+OrderEventPublisher → ApplicationEventPublisher.publishEvent()
+OrderEventListener → @EventListener + @Async
+```
+
+**Spring Event 三要素**：事件定义（sealed record）、事件发布（ApplicationEventPublisher）、事件监听（@EventListener）。
+
+### 4.4 模板方法 — 数据导出
+
+```
+ExportService<T>（抽象类）
+  ├── final export()          ← 模板方法（不可重写）
+  ├── abstract queryData()    ← 抽象步骤
+  ├── abstract convertData()  ← 抽象步骤
+  ├── hook needUpload()       ← 钩子（可选重写）
+  └── ExcelExportService / CsvExportService / JsonExportService
+```
+
+**模板方法 vs 策略模式**：模板方法 = 流程固定、步骤可变（继承）；策略 = 算法整体替换（组合）。
+
+### 4.5 责任链 — 订单校验
+
+```
+OrderFilter（接口）← filter() + getOrder()（优先级）
+OrderFilterChain ← List<OrderFilter> 自动注入 → 按 order 排序 → 顺序执行 → 短路失败
+```
+
+**4 个过滤器**：参数校验(10) → 库存检查(20) → 风控检查(30) → 优惠券校验(40)
+
+### 4.6 装饰器 — 服务增强
+
+```
+UserService（接口）← RealUserService / CacheDecorator / LogDecorator
+使用：new LogDecorator(new CacheDecorator(realService))
+```
+
+**装饰器 vs 代理**：装饰器关注"增强功能"（可多层嵌套），代理关注"控制访问"。
+
+### 模式对比速查
+
+| 模式 | 解决什么 | Spring 实现 | 关键词 |
+|------|---------|------------|--------|
+| 策略 | 算法替换 | List 注入 + Map | 多选一 |
+| 工厂 | 对象创建 | List 注入 + Map | 按类型创建 |
+| 观察者 | 事件驱动 | Spring Event | 发布-订阅 |
+| 模板方法 | 流程骨架 | 抽象类 + 继承 | 固定流程 |
+| 责任链 | 多级处理 | List 注入 + 排序 | 链式过滤 |
+| 装饰器 | 动态增强 | 接口 + 组合 | 层层包裹 |
+
+---
+
+## 五、分布式核心
+
+### 5.1 分布式锁 — Redisson
+
+| 用法 | 方法 | 场景 |
+|------|------|------|
+| 基本锁 | `lock()` / `unlock()` | 通用互斥 |
+| 超时尝试 | `tryLock(wait, lease, unit)` | 非阻塞 |
+| 看门狗 | 默认每 10s 续期 | 防止业务未完成锁过期 |
+| 公平锁 | `getFairLock()` | 按请求顺序，防饥饿 |
+| 读写锁 | `getReadWriteLock()` | 读共享、写独占 |
+
+**SETNX vs Redisson vs ZooKeeper**：
+
+| 方案 | 复杂度 | 可靠性 | 续期 | 推荐 |
+|------|--------|--------|------|------|
+| SETNX | 低 | 低（需手动处理） | 无 | 简单场景 |
+| Redisson | 中 | 高（看门狗） | 自动 | **推荐** |
+| ZooKeeper | 高 | 高（临时节点） | 自动 | 强一致场景 |
+
+### 5.2 分布式 ID — 雪花算法
+
+```
+64 位结构：1 符号 + 41 时间戳 + 5 数据中心 + 5 机器 + 12 序列
+每毫秒可生成 4096 个 ID，理论寿命 69 年
+```
+
+**三种实现**：
+- `UuidIdGenerator` — UUID，无序，不适合做主键
+- `SnowflakeIdGenerator` — 有序，高性能，需处理时钟回拨
+- `IncrementIdGenerator` — AtomicLong，模拟 Redis INCR
+
+### 5.3 分布式事务 — 三种方案
+
+| 方案 | 原理 | 适用场景 | 复杂度 |
+|------|------|---------|--------|
+| **TCC** | Try 预留 → Confirm 确认 → Cancel 回滚 | 资金类（强一致） | 高 |
+| **Saga** | 正向操作 + 补偿操作 | 长流程（最终一致） | 中 |
+| **本地消息表** | 业务+消息同事务，轮询发送 | 异步解耦 | 低 |
+
+**TCC 流程**：Try 冻结资源 → Confirm 扣减冻结 → Cancel 解冻
+**Saga 流程**：正向 T1→T2→T3，补偿 C3→C2→C1
+**本地消息表**：业务操作 + 写消息（同一事务）→ 轮询发送 → 消费确认
+
+---
+
+## 六、DDD 领域驱动设计
+
+### 6.1 核心概念映射
+
+| DDD 概念 | 代码实现 | 特征 |
+|---------|---------|------|
+| **值对象** | `Money`（record） | 无 ID、不可变、值相等 |
+| **实体** | `OrderItem` | 有 ID、有业务逻辑 |
+| **聚合根** | `OrderAggregate` | 维护不变量、控制内部访问 |
+| **领域事件** | sealed interface Created/Paid/Cancelled | 状态变更通知 |
+| **领域服务** | `PriceDomainService` | 跨聚合业务逻辑 |
+| **应用服务** | `CreateOrderAppService` | 编排领域对象 |
+
+### 6.2 聚合根 — 状态机
+
+```
+DRAFT → CONFIRMED → PAID → SHIPPED
+                  ↘ CANCELLED
+```
+
+每个状态转换都有业务规则校验（不变量保护），违反则抛异常。
+
+### 6.3 贫血模型 vs 充血模型
+
+| 模型 | 特点 | 问题 |
+|------|------|------|
+| 贫血 | Entity 只有 getter/setter，逻辑在 Service | 业务逻辑分散 |
+| 充血 | Entity 包含业务逻辑，Service 只做编排 | **DDD 推荐** |
+
+---
+
+## 七、JVM 内存模型、执行原理、垃圾回收（新增）
+
+### 7.1 JVM 内存区域
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      JVM 内存                            │
+├──────────┬──────────┬──────────┬──────────┬─────────────┤
+│ 程序计数器 │ 虚拟机栈  │ 本地方法栈 │    堆    │  方法区      │
+│ (PC)     │ (Stack)  │ (Native) │ (Heap)   │ (Metaspace) │
+├──────────┴──────────┴──────────┼──────────┼─────────────┤
+│         线程私有                 │  线程共享  │  线程共享     │
+└────────────────────────────────┴──────────┴─────────────┘
+```
+
+| 区域 | 线程 | 存储内容 | 异常 |
+|------|------|---------|------|
+| 程序计数器 | 私有 | 当前字节码行号 | 唯一不会 OOM |
+| 虚拟机栈 | 私有 | 栈帧（局部变量表+操作数栈+动态链接+返回地址） | StackOverflowError / OOM |
+| 本地方法栈 | 私有 | native 方法 | StackOverflowError / OOM |
+| 堆 | 共享 | 对象实例、数组 | OOM |
+| 方法区 | 共享 | 类信息、常量、静态变量、JIT 代码 | OOM: Metaspace |
+
+**代码体现**：`MemoryStructureDemo` — 内存区域结构、堆分代、OOM 演示。
+
+### 7.2 栈 vs 堆分配
+
+| 对比项 | 虚拟机栈 | 堆 |
+|--------|---------|-----|
+| 存储内容 | 基本类型、引用地址 | 对象实例、数组 |
+| 分配速度 | 极快（指针移动） | 较慢（需 GC 配合） |
+| 生命周期 | 方法结束即释放 | GC 回收时释放 |
+| 大小限制 | -Xss（默认 1MB） | -Xmx |
+
+**逃逸分析**：JIT 编译器分析对象是否逃出方法作用域 → 不逃逸可栈上分配或标量替换。
+
+**代码体现**：`StackHeapDemo` — 栈帧结构、堆分配、逃逸分析、StackOverflowError。
+
+### 7.3 字符串常量池
+
+```
+JDK 7+：常量池在堆中（StringTable）
+```
+
+| 场景 | 结果 |
+|------|------|
+| `String s1 = "abc"; String s2 = "abc";` | s1 == s2（池中同一对象） |
+| `String s3 = new String("abc");` | s1 != s3（堆中新对象） |
+| `String s4 = s3.intern();` | s1 == s4（返回池中引用） |
+| `new String("ab") + new String("cd")` | 不在池中（运行时拼接） |
+| `"ab" + "cd"` | 在池中（编译期常量折叠） |
+
+**代码体现**：`StringPoolDemo` — 6 种场景、intern 性能、JDK 版本差异。
+
+### 7.4 直接内存
+
+| 对比 | 堆内存 | 直接内存 |
+|------|--------|---------|
+| 分配 | 快 | 慢（系统调用） |
+| 读写 | 需拷贝 | 零拷贝 |
+| 回收 | GC 自动 | Cleaner（虚引用） |
+| 限制 | -Xmx | -XX:MaxDirectMemorySize |
+
+**代码体现**：`DirectMemoryDemo` — 性能对比、零拷贝、MappedByteBuffer。
+
+### 7.5 四种引用类型
+
+| 引用类型 | GC 回收条件 | 用途 | 典型场景 |
+|---------|-----------|------|---------|
+| 强引用 | 永不回收 | 普通对象 | `Object o = new Object()` |
+| 软引用 | 内存不足时 | 缓存 | 图片缓存 |
+| 弱引用 | 下次 GC | 缓存/映射 | WeakHashMap、ThreadLocal |
+| 虚引用 | 随时可能 | 跟踪回收 | Cleaner、DirectByteBuffer |
+
+**代码体现**：`ReferenceTypeDemo` — 四种引用演示 + WeakHashMap。
+
+### 7.6 类加载过程
+
+```
+加载 → 验证 → 准备 → 解析 → 初始化 → 使用 → 卸载
+├─── 连接阶段 ───┤
+```
+
+| 阶段 | 做什么 |
+|------|--------|
+| 加载 | 通过全限定名获取字节流 → 方法区 → 生成 Class 对象 |
+| 验证 | 文件格式、元数据、字节码、符号引用 |
+| 准备 | static 变量分配内存并赋零值（final 常量直接赋值） |
+| 解析 | 符号引用 → 直接引用 |
+| 初始化 | 执行 `<clinit>()`（static 赋值 + static {} 块） |
+
+**代码体现**：`ClassLoadDemo` — 准备 vs 初始化、线程安全单例、被动引用、类卸载条件。
+
+### 7.7 类加载器与双亲委派
+
+```
+Bootstrap ClassLoader  → java.lang.*（C++ 实现）
+  └─ Extension ClassLoader → javax.*
+      └─ Application ClassLoader → classpath
+          └─ Custom ClassLoader → 自定义路径
+```
+
+**双亲委派**：先委托父加载器，父无法加载才自己尝试 → 保证核心类不被篡改。
+
+**打破双亲委派**：SPI（线程上下文 ClassLoader）、Tomcat（重写 loadClass）、热部署。
+
+**代码体现**：`ClassLoaderDemo` — 层级关系、双亲委派流程、类唯一性、SPI。
+
+### 7.8 JIT 编译
+
+```
+字节码 → 解释执行（逐条翻译，启动快）
+      → JIT 编译（热点代码→机器码，执行快）
+        ├─ C1（快速编译，简单优化）
+        └─ C2（深度优化，编译较慢）
+```
+
+| 优化手段 | 作用 |
+|---------|------|
+| 方法内联 | 消除方法调用开销 |
+| 逃逸分析 | 标量替换 / 栈上分配 / 锁消除 |
+| 常量折叠 | 编译期计算常量 |
+
+**代码体现**：`JitCompileDemo` — 解释 vs JIT、方法内联、逃逸分析、分层编译。
+
+### 7.9 GC 算法
+
+| 算法 | 原理 | 优点 | 缺点 | 适用 |
+|------|------|------|------|------|
+| 标记-清除 | 标记存活，清除未标记 | 简单 | 碎片 | CMS 老年代 |
+| 标记-复制 | 存活对象复制到另一块 | 无碎片 | 50% 浪费 | 新生代 |
+| 标记-整理 | 存活对象向一端移动 | 无碎片 | 移动开销 | 老年代 |
+| 分代收集 | 新生代复制 + 老年代整理 | 平衡 | — | **主流** |
+
+**对象分配流程**：新对象 → Eden → Minor GC → Survivor → 年龄 ≥ 15 → Old。
+
+**代码体现**：`GcAlgorithmDemo` — 四种算法、对象分配流程、GC 触发条件。
+
+### 7.10 GC 收集器
+
+| 收集器 | 类型 | 算法 | 参数 | 场景 |
+|--------|------|------|------|------|
+| Serial | 单线程 | 复制/标记-整理 | `+UseSerialGC` | 小堆 |
+| Parallel | 多线程吞吐量 | 复制/标记-整理 | `+UseParallelGC` | JDK 8 默认 |
+| CMS | 并发低延迟 | 标记-清除 | `+UseConcMarkSweepGC` | Web 服务 |
+| G1 | 整堆可预测 | Region 化 | `+UseG1GC` | JDK 9+ 默认 |
+| ZGC | 超低延迟 | 着色指针 | `+UseZGC` | JDK 17+ 推荐 |
+
+**G1 核心**：堆划分为 Region，优先回收价值最大的 Region（Garbage First）。
+
+**代码体现**：`GcCollectorDemo` — 七种收集器对比、选择建议、G1 Region 机制。
+
+### 7.11 内存泄漏场景
+
+| 场景 | 根因 | 解决 |
+|------|------|------|
+| 静态集合 | 静态变量生命周期 = JVM 生命周期 | clear() / WeakHashMap |
+| 未关闭资源 | 底层资源不释放 | try-with-resources |
+| ThreadLocal | 线程池中 value 强引用不回收 | remove() |
+| 内部类 | 非静态内部类持有外部类引用 | 静态内部类 + 弱引用 |
+| 缓存无过期 | 只进不出 | Caffeine / Redis |
+
+**代码体现**：`MemoryLeakDemo` — 5 种泄漏场景 + 排查方法（jstat/jmap/MAT）。
+
+### 7.12 GC 调优
+
+**常用参数**：
+```
+-Xms / -Xmx          堆大小（建议相等）
+-Xmn                  新生代大小
+-XX:MaxGCPauseMillis  目标停顿时间（G1/ZGC）
+-XX:+UseG1GC          选择收集器
+-Xlog:gc*:file=gc.log GC 日志（JDK 9+）
+```
+
+**调优工具**：jstat、jmap、jcmd、Arthas、MAT、GCViewer。
+
+**代码体现**：`GcTuningDemo` — 参数速查、日志分析、工具介绍、调优案例。
+
+### 7.13 对象回收钩子：finalize vs Cleaner
+
+| 方案 | 确定性 | 复活对象 | 性能 | 状态 |
+|------|--------|---------|------|------|
+| finalize() | 不确定 | 可以 | 差 | **已废弃** |
+| PhantomReference | 确定 | 不可以 | 好 | 低级 API |
+| Cleaner | 确定 | 不可以 | 好 | **推荐** |
+
+**代码体现**：`FinalizeVsCleanerDemo` — finalize 问题、Cleaner 演示、PhantomReference。
+
+---
+
+## 八、Spring Boot 配置要点
+
+### 7.1 依赖栈
+
+```xml
+spring-boot-starter-web          # REST API
+spring-boot-starter-data-jpa     # ORM (Hibernate)
+mybatis-spring-boot-starter      # SQL 映射
+mysql-connector-j                # MySQL 驱动
+spring-boot-starter-data-redis   # Redis
+redisson-spring-boot-starter     # 分布式锁
+lombok                           # 代码简化
+```
+
+### 7.2 关键配置
+
+```yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20       # 最大连接数
+      minimum-idle: 5             # 最小空闲
+  jpa:
+    hibernate:
+      ddl-auto: none              # 生产环境不用自动建表
+    open-in-view: false           # 关闭 OSIV
+  data:
+    redis:
+      host: localhost
+      port: 6379
+```
+
+### 7.3 Redis 配置类
+
+```java
+RedisTemplate<String, Object>
+  ├── key: StringRedisSerializer
+  └── value: Jackson2JsonRedisSerializer（支持 Java 8 时间类型）
+```
+
+---
+
+## 八、API 接口速查
+
+### 事务接口 (`/api/tx`)
+
+| 路径 | 说明 |
+|------|------|
+| `/lifecycle/declarative` | 声明式事务提交 |
+| `/lifecycle/declarative-rollback` | 声明式事务回滚 |
+| `/lifecycle/programmatic` | 编程式事务提交 |
+| `/propagation/{type}` | 7 种传播行为 |
+| `/isolation/{init\|current\|reset}` | 隔离级别测试 |
+| `/fail/01` ~ `/fail/12` | 12 种失效场景 |
+| `/programmatic/*` | 编程式事务 |
+| `/nested/*` | 嵌套事务 |
+| `/readonly` | 只读事务 |
+| `/timeout/*` | 超时事务 |
+| `/batch/*` | 批量事务 |
+| `/big/*` | 大事务优化 |
+| `/overview` | 全部接口索引 |
+
+### 自定义 Tx 框架 (`/api/custom-tx`)
+
+| 路径 | 说明 |
+|------|------|
+| `/self-invoke-tx` | Tx 解决自调用 |
+| `/minimal-tx` | 最小事务范围 |
+| `/readonly` / `/writable` | 只读/读写 |
+| `/builder` | 链式配置 |
+| `/complete-flow` | 完整业务流程 |
+
+### Redis 接口 (`/api/redis`)
+
+| 路径 | 说明 |
+|------|------|
+| `/basic/{string\|list\|hash\|set\|zset\|common}` | 5 种数据结构 |
+| `/cache/{read\|write\|penetration\|bloom\|rebuild\|breakdown\|avalanche}` | 缓存策略 |
+| `/lock/{simple\|ttl\|uuid\|order\|seckill\|seckill-v2}` | 分布式锁 |
+| `/rate-limit/{fixed\|sliding\|token\|ip\|global\|multi\|cluster-*}` | 限流算法 |
+
+### 架构接口 (`/api/architecture`)
+
+| 路径 | 说明 |
+|------|------|
+| `/strategy/pay?channel=ALIPAY&amount=100` | 策略模式 |
+| `/factory/order` (POST) | 工厂模式 |
+| `/observer/order-created` | 观察者模式 |
+| `/chain/validate` | 责任链模式 |
+| `/template/export` | 模板方法 |
+| `/decorator/info` | 装饰器模式 |
+| `/distributed-id?type=snowflake` | 分布式 ID |
+| `/ddd/create-order` | DDD 下单 |
+
+### 高级 Tx 接口 (`/api/tx-advanced`)
+
+| 路径 | 说明 |
+|------|------|
+| `/big/chunked` | 分片提交 |
+| `/big/minimal` | 最小事务范围 |
+| `/nested/requires-new` | REQUIRES_NEW |
+| `/nested/nested` | NESTED |
+| `/nested/combined` | 组合嵌套 |
+
+### JVM 接口 (`/api/jvm`)
+
+**内存模型**：
+
+| 路径 | 说明 |
+|------|------|
+| `/memory/structure` | JVM 内存区域结构 |
+| `/memory/heap-generations` | 堆内存分代 |
+| `/memory/stack-heap` | 栈 vs 堆 + 逃逸分析 |
+| `/memory/stack-overflow` | StackOverflowError |
+| `/memory/string-pool` | 字符串常量池（6 种场景） |
+| `/memory/string-pool/intern-perf` | intern 性能测试 |
+| `/memory/string-pool/jdk-diff` | JDK 版本差异 |
+| `/memory/direct` | 直接内存 + 零拷贝 |
+| `/memory/reference?type=strong` | 四种引用（strong/soft/weak/phantom） |
+
+**执行原理**：
+
+| 路径 | 说明 |
+|------|------|
+| `/execution/bytecode` | 字节码指令 + 方法分派 + Lambda |
+| `/execution/classload` | 类加载过程 + 被动引用 + 类卸载 |
+| `/execution/classload/thread-safety` | 类加载线程安全（单例） |
+| `/execution/classloader` | 类加载器 + 双亲委派 + SPI |
+| `/execution/jit` | JIT 编译 + 内联 + 逃逸分析 + 分层编译 |
+
+**垃圾回收**：
+
+| 路径 | 说明 |
+|------|------|
+| `/gc/algorithm` | GC 算法 + 对象分配 + 触发条件 |
+| `/gc/collector` | 七种收集器 + 选择建议 + G1 Region |
+| `/gc/leak?type=static` | 内存泄漏（static/resource/threadlocal/inner/cache） |
+| `/gc/tuning` | GC 调优参数 + 日志 + 工具 + 案例 |
+| `/gc/finalize` | finalize vs Cleaner vs PhantomReference |
+
+---
+
+## 九、学习进度追踪
+
+### 已完成 ✅
+
+| 模块 | 知识点 | 深度 |
+|------|--------|------|
+| Spring 事务 | 生命周期、传播行为、隔离级别、失效场景、编程式、嵌套、只读、超时、批量 | ⭐⭐⭐⭐⭐ |
+| 大事务优化 | 反模式对比、分片提交、最小范围、延迟加锁、异步化、三层超时 | ⭐⭐⭐⭐⭐ |
+| 自定义 Tx 框架 | 设计原理、ApplicationContextAware、链式 API、高级联动 | ⭐⭐⭐⭐⭐ |
+| JPA/Hibernate | 实体映射、Repository、JPQL、@Modifying | ⭐⭐⭐⭐ |
+| MyBatis | Mapper 接口、XML 映射、动态 SQL | ⭐⭐⭐⭐ |
+| Redis 基础 | 5 种数据结构、RedisTemplate 配置 | ⭐⭐⭐⭐ |
+| Redis 缓存 | Cache Aside、穿透/击穿/雪崩、布隆过滤器（3 种） | ⭐⭐⭐⭐⭐ |
+| Redis 分布式锁 | SETNX 演进、Redisson、可重入、Lua 原子秒杀 | ⭐⭐⭐⭐⭐ |
+| Redis 限流 | 4 种算法 + Lua 原子版 + 多层限流 + 动态配置 | ⭐⭐⭐⭐⭐ |
+| 设计模式 | 策略、工厂、观察者、模板方法、责任链、装饰器 | ⭐⭐⭐⭐ |
+| 分布式 | Redisson 锁、雪花算法、TCC/Saga/本地消息表 | ⭐⭐⭐⭐ |
+| DDD | 聚合根、值对象、领域事件、领域服务、应用服务 | ⭐⭐⭐⭐ |
+| Java 17 特性 | Record、Sealed Classes（在项目中实际使用） | ⭐⭐⭐ |
+| **JVM 内存模型** | 内存区域、栈堆分配、逃逸分析、字符串常量池、直接内存、四种引用 | ⭐⭐⭐⭐⭐ |
+| **JVM 执行原理** | 字节码、类加载 5 阶段、双亲委派、类加载器层级、JIT 编译、分层编译 | ⭐⭐⭐⭐⭐ |
+| **JVM 垃圾回收** | GC 算法、七种收集器、内存泄漏、GC 调优、finalize vs Cleaner | ⭐⭐⭐⭐⭐ |
+
+### 待学习 ⬜
+
+| 优先级 | 模块 | 知识点 |
+|--------|------|--------|
+| P1 | 并发编程 | 线程池、CompletableFuture、并发工具 |
+| P1 | Spring Security | JWT、RBAC、OAuth2 |
+| P1 | 测试 | JUnit 5、Mockito、MockMvc |
+| P2 | Spring Cloud | Nacos、Gateway、Sentinel |
+| P2 | DevOps | Docker、K8s、CI/CD |
+| P3 | 前端 | Vue 3、TypeScript |
+| P3 | 中间件 | RocketMQ、Kafka、Elasticsearch |
+
+---
+
+## 十、参考文档
+
+| 文档 | 内容 | 行数 |
+|------|------|------|
+| `事务知识总结.md` | 事务全部知识（17 章） | 1400+ |
+| `架构设计学习指南.md` | 设计模式 + 分布式 + DDD | 220+ |
+| `项目结构.md` | 目录结构 + 模块说明 | 250+ |
+| `BIG_TRANSACTION_BEST_PRACTICES.md` | 大事务最佳实践 | — |
+| `CUSTOM_TX_FRAMEWORK.md` | Tx 框架设计文档 | — |
+| `jg.md` | 本文件 — 知识点总结提炼 | — |
+
+---
+
+## 十一、JVM 模块文件结构
+
+```
+src/main/java/com/example/transaction/jvm/
+├── memory/                              # 内存模型（5 个 Demo）
+│   ├── MemoryStructureDemo.java         # 内存区域结构 + 堆分代
+│   ├── StackHeapDemo.java               # 栈 vs 堆 + 逃逸分析
+│   ├── StringPoolDemo.java              # 字符串常量池（6 种场景）
+│   ├── DirectMemoryDemo.java            # 直接内存 + 零拷贝
+│   └── ReferenceTypeDemo.java           # 四种引用 + WeakHashMap
+│
+├── execution/                           # 执行原理（4 个 Demo）
+│   ├── BytecodeDemo.java                # 字节码指令 + 方法分派 + Lambda
+│   ├── ClassLoadDemo.java               # 类加载 5 阶段 + 线程安全单例
+│   ├── ClassLoaderDemo.java             # 双亲委派 + 自定义类加载器 + SPI
+│   └── JitCompileDemo.java              # JIT 编译 + 内联 + 逃逸分析
+│
+├── gc/                                  # 垃圾回收（5 个 Demo）
+│   ├── GcAlgorithmDemo.java             # 四种 GC 算法 + 对象分配流程
+│   ├── GcCollectorDemo.java             # 七种收集器 + G1 Region
+│   ├── MemoryLeakDemo.java              # 5 种内存泄漏场景 + 排查方法
+│   ├── GcTuningDemo.java                # GC 调优参数 + 日志 + 工具
+│   └── FinalizeVsCleanerDemo.java       # finalize vs Cleaner vs PhantomRef
+│
+└── controller/
+    └── JvmDemoController.java           # ~30 个 REST 接口
+```
+
+---
+
+*transaction-demo | Spring Boot 3.2.5 | Java 17 | 89 个源文件 | 2026-06-05*

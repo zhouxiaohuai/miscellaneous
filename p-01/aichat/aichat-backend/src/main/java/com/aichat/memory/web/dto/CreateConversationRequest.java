@@ -1,0 +1,14 @@
+package com.aichat.memory.web.dto;
+
+public class CreateConversationRequest {
+    private String title;
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+}
+

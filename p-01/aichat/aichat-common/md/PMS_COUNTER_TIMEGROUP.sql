@@ -1,0 +1,112 @@
+-- auto-generated definition
+create table PMS_COUNTER_TIMEGROUP
+(
+    COUNTERTIMEGROUP_ID   VARCHAR2(50) not null
+        constraint PK_PMS_COUNTER_TIMEGROUP
+            primary key,
+    COUNTERTIMEGROUP_CODE VARCHAR2(20) not null,
+    COUNTERTIMEGROUP_NAME VARCHAR2(200),
+    COUNTERGROUP_ID       VARCHAR2(50),
+    COUNTERGROUP_CODE     VARCHAR2(20),
+    COUNTERGROUP_NAME     VARCHAR2(200),
+    VESSEL_CODE           VARCHAR2(50) not null,
+    VESSEL_EQUIP_ID       VARCHAR2(50),
+    EQUIP_NO              VARCHAR2(50),
+    LAST_UPDATE           DATE,
+    TOTAL_VALUE           NUMBER(10),
+    CREATED_BY_USER       VARCHAR2(50),
+    CREATED_OFFICE        VARCHAR2(20),
+    CREATED_DTM_LOC       DATE,
+    CREATED_TIME_ZONE     VARCHAR2(10),
+    UPDATED_BY_USER       VARCHAR2(50),
+    UPDATED_OFFICE        VARCHAR2(20),
+    UPDATED_DTM_LOC       DATE,
+    UPDATED_TIME_ZONE     VARCHAR2(10),
+    RECORD_VERSION        NUMBER(10),
+    PRINCIPAL_GROUP_CODE  VARCHAR2(50),
+    COMPANY_CODE          VARCHAR2(50),
+    IS_DELETE             VARCHAR2(1),
+    REMARK                VARCHAR2(200)
+)
+/
+
+comment on table PMS_COUNTER_TIMEGROUP is '虚拟概念
+是介于计时器组和设备计时器之间的一个概念
+3）  时间组号：将所有可同时更新的一小组设备计时器聚集起来，关联在计时器组下的团体，成为时间组号。
+例如：主机是计时器组，主机NO1缸及附属设备的组合起来统称主机NO1缸时间组号
+
+'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COUNTERTIMEGROUP_ID is 'ID'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COUNTERTIMEGROUP_CODE is '时间组号编号,自动生成:船舶ID+S+xxx'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COUNTERTIMEGROUP_NAME is '时间组号名称'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COUNTERGROUP_ID is '定时组号ID'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COUNTERGROUP_CODE is '定时组号编号,自动生成:船舶ID+D+xxx'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COUNTERGROUP_NAME is '定时组号名称'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.VESSEL_CODE is '船舶ID'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.VESSEL_EQUIP_ID is '设备ID'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.EQUIP_NO is 'cwbt码'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.LAST_UPDATE is '最近一次更新日期'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.TOTAL_VALUE is '总运行时间'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.CREATED_BY_USER is 'CREATED_BY_USER'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.CREATED_OFFICE is 'CREATED_OFFICE'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.CREATED_DTM_LOC is 'CREATED_DTM_LOC'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.CREATED_TIME_ZONE is 'CREATED_TIME_ZONE'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.UPDATED_BY_USER is 'UPDATED_BY_USER'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.UPDATED_OFFICE is 'UPDATED_OFFICE'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.UPDATED_DTM_LOC is 'UPDATED_DTM_LOC'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.UPDATED_TIME_ZONE is 'UPDATED_TIME_ZONE'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.RECORD_VERSION is 'RECORD_VERSION'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.PRINCIPAL_GROUP_CODE is 'PRINCIPAL_GROUP_CODE'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.COMPANY_CODE is 'COMPANY_CODE'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.IS_DELETE is '删除标志'
+/
+
+comment on column PMS_COUNTER_TIMEGROUP.REMARK is '备注'
+/
+

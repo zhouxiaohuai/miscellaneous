@@ -1,0 +1,7 @@
+# 依赖包（基础骨架，后续按需扩展）
+requests==2.31.0
+python-dotenv==1.0.0
+flask==2.3.3
+Werkzeug==2.3.8
+Flask-CORS==4.0.0
+
