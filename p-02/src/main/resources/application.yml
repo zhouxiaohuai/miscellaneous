@@ -20,12 +20,11 @@ spring:
       hibernate:
         format_sql: true
 
-  # Redis 配置
+  # Redis 配置（无密码，不写 password 字段）
   data:
     redis:
       host: localhost
       port: 6379
-      password:
       database: 0
       lettuce:
         pool:
@@ -33,6 +32,10 @@ spring:
           max-idle: 8
           min-idle: 0
           max-wait: -1ms
+
+# Redisson 配置
+redisson:
+  config: classpath:redisson.yml
 
   sql:
     init:
