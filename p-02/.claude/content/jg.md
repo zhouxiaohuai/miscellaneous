@@ -29,23 +29,25 @@
 | **架构** | 设计模式 (6 种) | ✅ | `architecture/` 18 个文件 |
 | | 分布式 (锁/ID/事务) | ✅ | Redisson/雪花/TCC/Saga |
 | | DDD 领域驱动设计 | ✅ | 聚合根/值对象/领域事件 |
+| | **通用流程引擎** | ✅ | 状态机/SpEL/业务绑定 |
 | **测试** | JUnit 5 + Mockito | ⬜ | — |
 | | Testcontainers 集成测试 | ⬜ | — |
 | **AI 辅助** | Claude Code / Copilot | ✅ | 当前使用中 |
 | | Spring AI / RAG | ⬜ | — |
 
-**掌握度统计**：✅ 10 项 / ⬜ 10 项 = 50%
+**掌握度统计**：✅ 11 项 / ⬜ 10 项 = 52%
 
 ---
 
 ## 项目全景
 
 ```
-p-02 (100+ files)
+p-02 (120+ files)
 ├── 事务模块 (13 services + 4 controllers)     ← 核心深度
 ├── Redis 模块 (5 services)                    ← 已实现
 ├── 秒杀模块 (10 files)                        ← 场景驱动学习
-├── 并发模块 (10 files)                        ← 新增 ✅
+├── 流程引擎模块 (21 files)                    ← 新增 ✅ 通用流程引擎
+├── 并发模块 (10 files)                        ← 已实现
 ├── 架构模式模块 (18 files)                     ← 已实现
 ├── JVM 模块 (14 files)                        ← 已完成
 └── 配置 + 实体 + ORM (15 files)               ← 基础设施
@@ -1269,7 +1271,150 @@ src/main/java/com/example/transaction/seckill/
 
 ---
 
-## 九、并发编程速查（java26s 1.3 — 待实操）
+## 九、通用流程引擎（完整实现）
+
+### 9.1 核心架构
+
+```
+流程定义（模板）          流程实例（运行）
+┌─────────────┐         ┌─────────────┐
+│ WfProcess   │ 1 ──→ N │ WfInstance  │
+│ WfNode      │         │ WfInstanceNode │
+│ WfTransition│         └─────────────┘
+└─────────────┘
+```
+
+**设计思路**：
+- 流程定义 = 模板（节点 + 连线 + 条件）
+- 流程实例 = 某次运行（绑定业务实体，如订单#12345）
+- 引擎 = 驱动实例在节点间流转的执行器
+
+### 9.2 节点类型
+
+| 类型 | 说明 | 行为 |
+|------|------|------|
+| **START** | 开始节点，每流程恰好 1 个 | 自动通过，推进到下一节点 |
+| **END** | 结束节点，1 个或多个 | 标记实例完成 |
+| **TASK/HUMAN** | 人工任务 | 停下等待人处理 |
+| **TASK/AUTO** | 自动任务 | 调用 Spring Bean 自动执行 |
+| **GATEWAY** | 网关节点 | 按 SpEL 条件选择分支 |
+
+### 9.3 条件表达式（SpEL）
+
+```java
+// 条件存储在 t_wf_transition.condition_expr
+"#amount > 1000 and #approved == true"   // 复合条件
+"#vip == true"                            // 单条件
+null / 空                                  // 无条件（默认路径）
+```
+
+**评估逻辑**：网关按 `sort_order` 优先级匹配，第一个命中的分支胜出。
+
+### 9.4 执行引擎核心流程
+
+```
+startProcess(processKey, businessType, businessId, variables)
+  → 创建 Instance(RUNNING)
+  → START 自动完成
+  → advanceToNext() 循环推进：
+      TASK/AUTO  → 执行 Bean → 继续
+      GATEWAY    → 评估条件 → 选择分支 → 继续
+      TASK/HUMAN → 停下，等待 completeTask()
+      END        → 标记 Instance 完成
+```
+
+### 9.5 数据模型（5 张表）
+
+| 表 | 说明 | 关键字段 |
+|---|------|---------|
+| `t_wf_process` | 流程定义 | process_key, business_type, status |
+| `t_wf_node` | 流程节点 | node_type, task_type, handler_bean |
+| `t_wf_transition` | 连线 | source_node_id, target_node_id, condition_expr |
+| `t_wf_instance` | 流程实例 | business_type, business_id, variables(JSON) |
+| `t_wf_instance_node` | 实例节点 | status, operator, comment |
+
+### 9.6 API 接口速查
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/wf/process` | 创建流程定义 |
+| GET | `/api/wf/process/{id}` | 获取流程详情 |
+| GET | `/api/wf/process` | 列出流程定义 |
+| PUT | `/api/wf/process/{id}/publish` | 发布流程 |
+| PUT | `/api/wf/process/{id}/stop` | 停用流程 |
+| POST | `/api/wf/instance/start` | 启动流程实例 |
+| POST | `/api/wf/instance/{id}/node/{nodeId}/complete` | 完成人工任务 |
+| POST | `/api/wf/instance/{id}/cancel` | 取消流程实例 |
+| GET | `/api/wf/instance/{id}` | 查询实例状态 |
+| GET | `/api/wf/business/status` | 查询业务实体流程状态 |
+| GET | `/api/wf/business/instances` | 列出业务实体的流程实例 |
+| GET | `/api/wf/overview` | API 总览 |
+
+### 9.7 示例：订单审批流程
+
+```
+START → [自动]创建订单 → [人工]主管审批 → {网关}
+                                            ├── 金额>1000且已批准 → [人工]总监审批 → [自动]处理支付 → END
+                                            └── 默认 → [自动]拒绝通知 → END
+```
+
+**调用序列**：
+1. `POST /api/wf/process` — 创建流程定义（含节点+连线）
+2. `PUT /api/wf/process/1/publish` — 发布（校验完整性）
+3. `POST /api/wf/instance/start` — 启动实例（订单#12345, 金额1500）
+4. `GET /api/wf/business/status?businessType=order&businessId=12345` — 查看当前在"主管审批"
+5. `POST /api/wf/instance/1/node/3/complete` — 主管审批通过
+6. `GET /api/wf/business/status` — 查看当前在"总监审批"（因为金额>1000）
+7. `POST /api/wf/instance/1/node/5/complete` — 总监审批通过
+8. `GET /api/wf/instance/1` — 查看完整历史，实例已完成
+
+### 9.8 文件结构
+
+```
+src/main/java/com/example/transaction/workflow/
+├── entity/
+│   ├── WfProcess.java              # 流程定义
+│   ├── WfNode.java                 # 流程节点
+│   ├── WfTransition.java           # 连线
+│   ├── WfInstance.java             # 流程实例
+│   └── WfInstanceNode.java         # 实例节点
+├── repository/
+│   ├── WfProcessRepository.java
+│   ├── WfNodeRepository.java
+│   ├── WfTransitionRepository.java
+│   ├── WfInstanceRepository.java
+│   └── WfInstanceNodeRepository.java
+├── engine/
+│   ├── NodeType.java               # 节点类型枚举
+│   ├── TaskType.java               # 任务类型枚举
+│   ├── InstanceStatus.java         # 实例状态枚举
+│   ├── InstanceNodeStatus.java     # 实例节点状态枚举
+│   ├── WorkflowException.java      # 自定义异常
+│   ├── AutoTaskHandler.java        # 自动任务接口
+│   ├── ConditionEvaluator.java     # SpEL 条件评估
+│   ├── WorkflowStatusDTO.java      # 状态返回 DTO
+│   └── WorkflowEngine.java         # 核心引擎
+├── service/
+│   └── WorkflowService.java        # 业务服务
+└── controller/
+    └── WorkflowController.java     # REST 接口
+```
+
+### 9.9 知识点总结
+
+| 知识点 | 代码体现 | 核心原理 |
+|--------|----------|----------|
+| 状态机模式 | WorkflowEngine.advanceToNext | 节点状态流转驱动引擎 |
+| SpEL 表达式 | ConditionEvaluator | Spring 内置表达式引擎 |
+| 策略模式 | AutoTaskHandler 接口 | 不同业务实现不同处理器 |
+| 模板方法 | startProcess → advanceToNext | 固定流程 + 可变节点 |
+| 责任链 | GATEWAY 条件评估 | 按优先级匹配分支 |
+| JSON 存储 | WfInstance.variables | 流程变量灵活存储 |
+| 业务绑定 | businessType + businessId | 通用绑定任意业务 |
+
+---
+
+## 十、并发编程速查（java26s 1.3 — 待实操）
 
 > 状态：⬜ 待学习 | 对应技能图谱 Java 核心 1.3
 
@@ -1511,6 +1656,7 @@ ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
 | **JVM 执行原理** | 字节码、类加载 5 阶段、双亲委派、类加载器层级、JIT 编译、分层编译 | ⭐⭐⭐⭐⭐ |
 | **JVM 垃圾回收** | GC 算法、七种收集器、内存泄漏、GC 调优、finalize vs Cleaner | ⭐⭐⭐⭐⭐ |
 | **秒杀系统** | Redis Lua 原子操作、延迟队列、滑动窗口限流、分布式锁、乐观锁/悲观锁 | ⭐⭐⭐⭐⭐ |
+| **流程引擎** | 状态机、SpEL 条件分支、业务绑定、节点流转、自动/人工任务 | ⭐⭐⭐⭐⭐ |
 | **并发编程** | 线程基础、线程池 7 参数、CompletableFuture、CountDownLatch/CyclicBarrier/Semaphore、ReentrantLock/ReadWriteLock/StampedLock、CAS/LongAdder/ConcurrentHashMap | ⭐⭐⭐⭐⭐ |
 
 ### 待学习 ⬜（按 java26s 技能图谱对齐）
@@ -1564,6 +1710,7 @@ ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
 | `项目结构.md` | 目录结构 + 模块说明 | 250+ |
 | `BIG_TRANSACTION_BEST_PRACTICES.md` | 大事务最佳实践 | — |
 | `CUSTOM_TX_FRAMEWORK.md` | Tx 框架设计文档 | — |
+| `商业场景全景图.md` | 10 大商业场景 + 架构设计 + 技术选型 | — |
 | `jg.md` | 本文件 — 知识点总结提炼 + java26s 技能图谱 | — |
 
 ---
