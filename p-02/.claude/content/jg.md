@@ -1,18 +1,52 @@
 # Java 全栈学习 — 知识点总结提炼
 
-> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17 | 89 个源文件
-> 最后更新：2026-06-05
+> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 90+ 个源文件
+> 最后更新：2026-06-09
+
+---
+
+## 零、技能图谱总纲（java26s 2026 版）
+
+> 全栈能力全景，指导后续学习方向。已掌握的标注 ✅，待学习的标注 ⬜。
+
+| 大类 | 子项 | 状态 | 项目对应 |
+|------|------|------|---------|
+| **Java 核心** | 语言基础 (Record/Sealed/Pattern Matching) | ✅ | 项目中已用 Record + Sealed |
+| | Virtual Threads (Project Loom) | ⬜ | — |
+| | JVM 内存/GC/调优 | ✅ | `jvm/` 14 个 Demo |
+| | 并发编程 (线程池/CompletableFuture) | ⬜ | — |
+| **Spring 生态** | Spring Boot 3.x 核心 | ✅ | 全项目基础 |
+| | Spring Cloud 微服务 | ⬜ | — |
+| | Spring Security + OAuth2 | ⬜ | — |
+| **数据层** | MySQL + JPA + MyBatis | ✅ | `entity/` + `jpa/` + `mybatis/` |
+| | Redis (5 结构/缓存/锁/限流) | ✅ | `redis/` 5 个 Service |
+| | 缓存策略 (穿透/击穿/雪崩) | ✅ | 布隆过滤器 3 种实现 |
+| **前端** | HTML/CSS/JS/TypeScript | ⬜ | — |
+| | Vue 3 / React 18 | ⬜ | — |
+| **DevOps** | Docker + K8s | ⬜ | — |
+| | CI/CD (GitLab CI/Jenkins) | ⬜ | — |
+| | 监控 (Prometheus+Grafana/ELK) | ⬜ | — |
+| **架构** | 设计模式 (6 种) | ✅ | `architecture/` 18 个文件 |
+| | 分布式 (锁/ID/事务) | ✅ | Redisson/雪花/TCC/Saga |
+| | DDD 领域驱动设计 | ✅ | 聚合根/值对象/领域事件 |
+| **测试** | JUnit 5 + Mockito | ⬜ | — |
+| | Testcontainers 集成测试 | ⬜ | — |
+| **AI 辅助** | Claude Code / Copilot | ✅ | 当前使用中 |
+| | Spring AI / RAG | ⬜ | — |
+
+**掌握度统计**：✅ 10 项 / ⬜ 10 项 = 50%
 
 ---
 
 ## 项目全景
 
 ```
-p-02 (89 files)
+p-02 (90+ files)
 ├── 事务模块 (13 services + 4 controllers)     ← 核心深度
 ├── Redis 模块 (5 services)                    ← 已实现
+├── 秒杀模块 (10 files)                        ← 场景驱动学习
 ├── 架构模式模块 (18 files)                     ← 已实现
-├── JVM 模块 (14 files)                        ← 新增
+├── JVM 模块 (14 files)                        ← 已完成
 └── 配置 + 实体 + ORM (15 files)               ← 基础设施
 ```
 
@@ -618,7 +652,7 @@ Bootstrap ClassLoader  → java.lang.*（C++ 实现）
 
 ---
 
-## 八、Spring Boot 配置要点
+## 八之一、Spring Boot 配置要点
 
 ### 7.1 依赖栈
 
@@ -760,7 +794,491 @@ RedisTemplate<String, Object>
 
 ---
 
-## 九、学习进度追踪
+## 八、秒杀模块（场景驱动学习）
+
+### 8.1 秒杀系统架构
+
+```
+用户请求 → 风控过滤 → Redis 预检 → 下单扣减 → 支付 → 超时取消
+```
+
+**当前实现状态**：✅ Redis 全链路已通 / ⚠️ RocketMQ 待接入 / ⚠️ schema.sql 缺建表
+
+**核心挑战**：
+
+| 问题 | 场景 | 后果 |
+|------|------|------|
+| 超卖 | 100件商品卖了120件 | 无法发货，赔偿 |
+| 重复下单 | 同一用户下了2单 | 库存浪费 |
+| 库存不一致 | 缓存和数据库不一致 | 超卖或少卖 |
+| 恶意刷单 | 脚本抢购 | 正常用户买不到 |
+| 系统崩溃 | 瞬时流量太大 | 全站不可用 |
+
+### 8.2 核心流程
+
+```
+用户点击"秒杀"
+    ↓
+Redis Lua 原子操作（判断库存 + 判断重复 + 扣减库存）
+    ↓
+成功 → 数据库创建订单 + 乐观锁扣减库存
+失败 → 返回"已售罄"或"已抢过"
+```
+
+**Lua 脚本（核心中的核心）**：
+
+```lua
+-- KEYS[1] = 库存 key
+-- KEYS[2] = 已购用户 set key
+-- ARGV[1] = userId
+
+-- 1. 判断用户是否已抢购过
+if redis.call('sismember', KEYS[2], ARGV[1]) == 1 then
+    return -1
+end
+
+-- 2. 判断库存是否充足
+local stock = tonumber(redis.call('get', KEYS[1]))
+if stock == nil or stock <= 0 then
+    return 0
+end
+
+-- 3. 扣减库存
+redis.call('decrby', KEYS[1], 1)
+
+-- 4. 记录用户已抢购
+redis.call('sadd', KEYS[2], ARGV[1])
+
+return 1
+```
+
+### 8.3 优先级与解决方案
+
+| 优先级 | 问题 | 方案 | 学习价值 |
+|--------|------|------|---------|
+| **P0** | 超时未支付库存不释放 | 延迟队列（Redis ZSet） | ⭐⭐⭐⭐⭐ |
+| **P0** | 无限制刷接口 | 滑动窗口限流（Redis ZSet） | ⭐⭐⭐⭐⭐ |
+| **P1** | 快速点击重复请求 | 分布式锁（SETNX） | ⭐⭐⭐⭐ |
+| **P1** | 乐观锁冲突 | 悲观锁（SELECT FOR UPDATE） | ⭐⭐⭐⭐ |
+| **P2** | 库存不一致 | 回补机制 + 定时对账 | ⭐⭐⭐ |
+
+### 8.4 P0-1：延迟队列（超时取消 + 库存回补）
+
+**方案：Redis ZSet 延迟队列**
+
+```
+秒杀成功 → 订单入队 Redis ZSet（score = 过期时间戳）
+    ↓
+定时任务每秒扫描 ZSet → 找到已过期的订单
+    ↓
+取消订单 → 回补 Redis 库存 → 回补数据库库存
+```
+
+**原理**：
+- ZSet 有 score（分数）特性，可以按分数排序
+- 把"过期时间戳"作为 score，订单号作为 value
+- 定时任务扫描 score < 当前时间戳 的元素，就是已过期的订单
+
+**关键代码**：
+```java
+// 入队
+long expireTime = System.currentTimeMillis() + ORDER_TIMEOUT_MS;
+redisTemplate.opsForZSet().add(DELAY_QUEUE_KEY, value, expireTime);
+
+// 扫描过期订单
+Set<String> expiredOrders = redisTemplate.opsForZSet()
+        .rangeByScore(DELAY_QUEUE_KEY, 0, now);
+```
+
+**生产环境替代方案**：RocketMQ 延迟消息（可靠性更高）
+
+### 8.5 P0-2：滑动窗口限流
+
+**方案：Redis ZSet 滑动窗口**
+
+```
+用户请求 → 检查该用户在 N 秒内是否超过 M 次
+    ↓
+超过 → 拒绝，返回"操作太频繁"
+未超过 → 放行
+```
+
+**为什么用 ZSet 而不是 INCR + EXPIRE？**
+
+| 方案 | 原理 | 问题 |
+|------|------|------|
+| **固定窗口** | INCR + EXPIRE | 窗口边界处可绕过限制 |
+| **滑动窗口** | ZSet + 时间戳 | 统计"过去N秒"的精确请求数 |
+
+**固定窗口边界问题**：
+```
+|--------窗口1--------|--------窗口2--------|
+  1 2 3 4 5            1 2 3 4 5
+  窗口末尾5次 + 窗口开头5次 = 1秒内10次，绕过限制
+```
+
+**滑动窗口原理**：
+```lua
+-- 1. 删除窗口外的旧记录
+redis.call('zremrangebyscore', KEYS[1], '-inf', ARGV[1])
+
+-- 2. 统计窗口内的请求数
+local count = redis.call('zcard', KEYS[1])
+
+-- 3. 判断是否超过限制
+if count >= tonumber(ARGV[3]) then
+    return 0
+end
+
+-- 4. 未超过限制，添加当前请求
+local member = ARGV[2] .. ':' .. math.random(1000000)
+redis.call('zadd', KEYS[1], ARGV[2], member)
+
+return 1
+```
+
+### 8.6 P1-1：防重复提交
+
+**方案：Redis 分布式锁（SETNX）**
+
+```
+用户快速点击3次"秒杀"按钮
+    ↓
+请求1 → 尝试获取锁 → 成功 → 进入秒杀流程
+请求2 → 尝试获取锁 → 失败 → 拒绝："请求处理中"
+请求3 → 尝试获取锁 → 失败 → 拒绝："请求处理中"
+```
+
+**关键代码**：
+```java
+// 尝试获取锁
+Boolean success = redisTemplate.opsForValue()
+        .setIfAbsent(key, "1", LOCK_EXPIRE_SECONDS, TimeUnit.SECONDS);
+
+// 释放锁（finally 中调用）
+redisTemplate.delete(key);
+```
+
+**锁的设计**：
+- key：`seckill:lock:{userId}:{productId}`
+- 过期时间：5 秒（防止死锁）
+- 无论成功失败，finally 中释放锁
+
+### 8.7 P1-2：乐观锁 vs 悲观锁
+
+| 对比项 | 乐观锁 | 悲观锁 |
+|--------|--------|--------|
+| 实现方式 | `WHERE version = ?` | `SELECT FOR UPDATE` |
+| 锁定时机 | 更新时才检查 | 查询时就锁定 |
+| 冲突处理 | 失败重试 | 排队等待 |
+| 适用场景 | 低冲突 | 高冲突 |
+| 并发性能 | 高 | 低 |
+
+**乐观锁**：
+```java
+@Modifying
+@Query("UPDATE SeckillProduct p SET p.stock = p.stock - 1, p.version = p.version + 1 " +
+       "WHERE p.id = :id AND p.stock > 0 AND p.version = :version")
+int deductStockOptimistic(@Param("id") Long id, @Param("version") Integer version);
+```
+
+**悲观锁**：
+```java
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("SELECT p FROM SeckillProduct p WHERE p.id = :id")
+Optional<SeckillProduct> findByIdWithLock(@Param("id") Long id);
+```
+
+### 8.8 秒杀模块文件结构
+
+```
+src/main/java/com/example/transaction/seckill/
+├── entity/
+│   ├── SeckillProduct.java              # 秒杀商品（含乐观锁 version）
+│   └── SeckillOrder.java                # 秒杀订单
+├── repository/
+│   ├── SeckillProductRepository.java    # 乐观锁 + 悲观锁扣减
+│   └── SeckillOrderRepository.java      # 判断重复购买
+├── service/
+│   ├── SeckillService.java              # 核心秒杀逻辑
+│   ├── SeckillDelayQueueService.java    # 延迟队列（超时取消）
+│   ├── SeckillRateLimitService.java     # 滑动窗口限流
+│   └── SeckillDuplicateService.java     # 防重复提交
+├── consumer/
+│   └── SeckillOrderCancelConsumer.java  # RocketMQ 消费者（待启用）
+└── controller/
+    └── SeckillController.java           # 演示接口
+```
+
+### 8.9 秒杀接口速查
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/seckill/init` | POST | 初始化测试环境（创建商品 + 预热库存） |
+| `/api/seckill/buy` | POST | 秒杀下单（乐观锁版本） |
+| `/api/seckill/buy-pessimistic` | POST | 秒杀下单（悲观锁版本） |
+| `/api/seckill/stock/{id}` | GET | 查询剩余库存 |
+| `/api/seckill/check` | GET | 查询是否已抢购 |
+| `/api/seckill/rate-limit` | GET | 查询限流状态 |
+| `/api/seckill/delay-queue` | GET | 查询延迟队列状态 |
+
+### 8.10 秒杀模块知识点总结
+
+| 知识点 | 代码体现 | 核心原理 |
+|--------|----------|----------|
+| Redis Lua 原子操作 | SeckillService | 多步操作原子执行，防止超卖 |
+| Redis ZSet 延迟队列 | SeckillDelayQueueService | score = 过期时间戳，定时扫描 |
+| Redis ZSet 滑动窗口 | SeckillRateLimitService | 统计过去N秒的精确请求数 |
+| Redis SETNX 分布式锁 | SeckillDuplicateService | 防止重复提交 |
+| 乐观锁（CAS） | SeckillProductRepository | WHERE version = ? |
+| 悲观锁（行锁） | SeckillProductRepository | SELECT FOR UPDATE |
+| 定时任务 | SeckillDelayQueueService | @Scheduled(fixedRate = 1000) |
+
+### 8.11 秒杀模块待完善项（Gap Analysis）
+
+| # | 问题 | 当前状态 | 修复方案 | 优先级 |
+|---|------|---------|---------|--------|
+| 1 | RocketMQ 未接入 | Redis ZSet 本地回退 | 注入 `RocketMQTemplate`，发送延迟消息到 `seckill-order-cancel` topic | P1 |
+| 2 | Consumer 已禁用 | `@Component` 被注释 | 启用 `SeckillOrderCancelConsumer`，实现真正的 MQ 消费 | P1 |
+| 3 | schema.sql 缺建表 | 无 `t_seckill_product` / `t_seckill_order` | 补充 CREATE TABLE DDL | P0 |
+| 4 | `findByOrderNo()` 缺失 | `findAll().stream().filter()` 全表扫描 | Repository 增加 `findByOrderNo(String)` | P0 |
+| 5 | 库存回补无乐观锁 | 直接 `setStock(stock+1)` | 改用 `@Version` 或 `WHERE stock >= 0` | P1 |
+| 6 | 超时取消无分布式锁 | 并发处理可能库存漂移 | 加 Redisson `RLock` 保护回补操作 | P2 |
+
+**下一步学习方向**（结合 java26s 技能图谱）：
+
+| 优先级 | 模块 | 对应技能图谱章节 | 预期收益 |
+|--------|------|-----------------|---------|
+| P0 | 补全秒杀 schema.sql + findByOrderNo | 数据层 3.1 | 秒杀模块可独立运行 |
+| P1 | 并发编程（线程池 + CompletableFuture） | Java 核心 1.3 | 异步化秒杀流程 |
+| P1 | Spring Security + JWT | Spring 生态 2.3 | 接口鉴权 |
+| P1 | JUnit 5 + MockMvc 测试 | 测试 七 | 秒杀接口自动化验证 |
+| P2 | Spring Cloud（Nacos + Gateway） | Spring 生态 2.2 | 微服务拆分秒杀服务 |
+| P2 | Docker + CI/CD | DevOps 五 | 秒杀服务容器化部署 |
+| P3 | RocketMQ 完整接入 | 分布式 6.2 | 延迟消息可靠性提升 |
+
+---
+
+## 九、并发编程速查（java26s 1.3 — 待实操）
+
+> 状态：⬜ 待学习 | 对应技能图谱 Java 核心 1.3
+
+### 9.1 线程池 ThreadPoolExecutor — 7 参数
+
+| 参数 | 含义 | 建议值 |
+|------|------|--------|
+| corePoolSize | 核心线程数 | CPU 密集型 = N+1，IO 密集型 = 2N |
+| maximumPoolSize | 最大线程数 | 根据压测调整 |
+| keepAliveTime | 非核心线程存活时间 | 60s |
+| unit | 时间单位 | TimeUnit.SECONDS |
+| workQueue | 等待队列 | LinkedBlockingQueue / ArrayBlockingQueue |
+| threadFactory | 线程工厂 | 自定义命名（便于排查） |
+| handler | 拒绝策略 | CallerRunsPolicy（推荐） |
+
+**四种拒绝策略**：AbortPolicy（抛异常）、CallerRunsPolicy（调用者执行）、DiscardPolicy（静默丢弃）、DiscardOldestPolicy（丢弃最旧）
+
+### 9.2 CompletableFuture 实战
+
+```java
+// 并行查询，合并结果
+CompletableFuture.allOf(
+    CompletableFuture.supplyAsync(() -> queryUser(id)),
+    CompletableFuture.supplyAsync(() -> queryOrders(id))
+).thenApply(v -> mergeResult()).join();
+
+// 超时控制
+CompletableFuture.supplyAsync(() -> fetchData())
+    .orTimeout(3, TimeUnit.SECONDS)
+    .exceptionally(ex -> fallbackValue);
+```
+
+### 9.3 并发工具
+
+| 工具 | 用途 | 场景 |
+|------|------|------|
+| CountDownLatch | 等待 N 个任务完成 | 批量数据加载 |
+| CyclicBarrier | N 个线程互相等待 | 并行计算汇合 |
+| Semaphore | 控制并发数 | 连接池限流 |
+| StampedLock | 读多写少 | 高性能缓存 |
+
+### 9.4 锁演进
+
+```
+synchronized → ReentrantLock → StampedLock（读多写少）
+                ├── tryLock(wait, unit)  非阻塞
+                ├── lockInterruptibly()  可中断
+                └── 公平锁 new ReentrantLock(true)
+```
+
+---
+
+## 十、Spring Cloud 微服务速查（java26s 2.2 — 待实操）
+
+> 状态：⬜ 待学习 | 对应技能图谱 Spring 生态 2.2
+
+### 10.1 核心组件
+
+| 组件 | 推荐方案 | 作用 |
+|------|----------|------|
+| 注册中心 | Nacos 2.x | 服务注册与发现 |
+| 配置中心 | Nacos Config | 动态配置管理 |
+| 网关 | Spring Cloud Gateway | 路由、限流、鉴权 |
+| 负载均衡 | Spring Cloud LoadBalancer | 客户端负载 |
+| 熔断限流 | Sentinel / Resilience4j | 服务保护 |
+| 链路追踪 | Micrometer Tracing + Zipkin | 分布式调用链 |
+| 远程调用 | OpenFeign / RestClient | 声明式 HTTP |
+
+### 10.2 服务调用
+
+```java
+@FeignClient(name = "order-service", fallbackFactory = OrderFallback.class)
+public interface OrderClient {
+    @GetMapping("/api/orders/{userId}")
+    List<OrderDTO> getOrders(@PathVariable Long userId);
+}
+```
+
+---
+
+## 十一、Spring Security + OAuth2 速查（java26s 2.3 — 待实操）
+
+> 状态：⬜ 待学习 | 对应技能图谱 Spring 生态 2.3
+
+### 11.1 认证架构
+
+```
+请求 → FilterChain → AuthenticationManager → AuthenticationProvider → UserDetailsService
+                                                                        ↓
+JWT Token ← TokenGenerator ← Authentication（认证成功）
+```
+
+### 11.2 核心配置
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+    @Bean
+    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        return http
+            .csrf(AbstractHttpConfigurer::disable)
+            .sessionManagement(s -> s.sessionCreationPolicy(STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .anyRequest().authenticated())
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
+            .build();
+    }
+}
+```
+
+### 11.3 RBAC 模型
+
+```
+User ← UserRole → Role ← RolePermission → Permission
+用户     多对多      角色     多对多          权限
+```
+
+---
+
+## 十二、测试速查（java26s 七 — 待实操）
+
+> 状态：⬜ 待学习 | 对应技能图谱 测试 七
+
+### 12.1 测试金字塔
+
+```
+        /  E2E  \         ← 少量（Playwright）
+       / 集成测试 \        ← 适量（Testcontainers）
+      /  单元测试   \      ← 大量（JUnit 5 + Mockito）
+```
+
+### 12.2 JUnit 5 核心注解
+
+| 注解 | 用途 |
+|------|------|
+| `@Test` | 测试方法 |
+| `@ParameterizedTest` + `@ValueSource` | 参数化测试 |
+| `@DisplayName` | 中文测试名 |
+| `@SpringBootTest` | Spring 集成测试 |
+| `@AutoConfigureMockMvc` | MockMvc 自动配置 |
+| `@MockBean` | 替换 Spring Bean |
+
+### 12.3 MockMvc 实战
+
+```java
+mockMvc.perform(post("/api/users")
+        .contentType(APPLICATION_JSON)
+        .content("{\"name\":\"张三\"}"))
+    .andExpect(status().isOk())
+    .andExpect(jsonPath("$.data.name").value("张三"));
+```
+
+---
+
+## 十三、前端速查（java26s 四 — 待实操）
+
+> 状态：⬜ 待学习 | 对应技能图谱 前端 四
+
+### 13.1 技术栈选型
+
+| 技术 | 推荐 | 说明 |
+|------|------|------|
+| 框架 | Vue 3 + Vite | 国内主流，上手快 |
+| 语言 | TypeScript | 类型安全 |
+| 状态管理 | Pinia | Vue 3 官方推荐 |
+| UI 库 | Element Plus / Ant Design Vue | 企业级组件 |
+| HTTP | Axios | 拦截器、取消请求 |
+| 包管理 | pnpm | 快、省空间 |
+
+### 13.2 Vue 3 Composition API
+
+```vue
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+const users = ref<User[]>([])
+onMounted(async () => {
+  const { data } = await axios.get('/api/users')
+  users.value = data.data
+})
+</script>
+```
+
+---
+
+## 十四、DevOps 速查（java26s 五 — 待实操）
+
+> 状态：⬜ 待学习 | 对应技能图谱 DevOps 五
+
+### 14.1 Docker
+
+```dockerfile
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
+```
+
+### 14.2 CI/CD 流水线
+
+```
+代码提交 → SonarQube 扫描 → JUnit 测试 → Docker 构建 → 推送镜像 → K8s 部署 → 健康检查
+```
+
+### 14.3 监控体系
+
+| 层面 | 工具 |
+|------|------|
+| 指标 | Prometheus + Grafana |
+| 日志 | ELK / Loki |
+| 链路 | SkyWalking / Jaeger |
+| 告警 | AlertManager + Webhook |
+
+---
+
+## 十五、学习进度追踪
 
 ### 已完成 ✅
 
@@ -782,18 +1300,47 @@ RedisTemplate<String, Object>
 | **JVM 内存模型** | 内存区域、栈堆分配、逃逸分析、字符串常量池、直接内存、四种引用 | ⭐⭐⭐⭐⭐ |
 | **JVM 执行原理** | 字节码、类加载 5 阶段、双亲委派、类加载器层级、JIT 编译、分层编译 | ⭐⭐⭐⭐⭐ |
 | **JVM 垃圾回收** | GC 算法、七种收集器、内存泄漏、GC 调优、finalize vs Cleaner | ⭐⭐⭐⭐⭐ |
+| **秒杀系统** | Redis Lua 原子操作、延迟队列、滑动窗口限流、分布式锁、乐观锁/悲观锁 | ⭐⭐⭐⭐⭐ |
 
-### 待学习 ⬜
+### 待学习 ⬜（按 java26s 技能图谱对齐）
 
-| 优先级 | 模块 | 知识点 |
-|--------|------|--------|
-| P1 | 并发编程 | 线程池、CompletableFuture、并发工具 |
-| P1 | Spring Security | JWT、RBAC、OAuth2 |
-| P1 | 测试 | JUnit 5、Mockito、MockMvc |
-| P2 | Spring Cloud | Nacos、Gateway、Sentinel |
-| P2 | DevOps | Docker、K8s、CI/CD |
-| P3 | 前端 | Vue 3、TypeScript |
-| P3 | 中间件 | RocketMQ、Kafka、Elasticsearch |
+**阶段一：补全当前模块（P0）**
+
+| 模块 | 知识点 | 对应技能图谱 |
+|------|--------|-------------|
+| 秒杀补全 | schema.sql、findByOrderNo、库存回补乐观锁 | 数据层 3.1 |
+
+**阶段二：Java 进阶 + 安全 + 测试（P1）**
+
+| 模块 | 知识点 | 对应技能图谱 |
+|------|--------|-------------|
+| 并发编程 | 线程池 7 参数、CompletableFuture、CountDownLatch、Semaphore | Java 核心 1.3 |
+| Virtual Threads | Project Loom 轻量级线程、高并发 IO | Java 核心 1.1 |
+| Spring Security | JWT Token（Access+Refresh）、RBAC、OAuth2 授权服务器 | Spring 生态 2.3 |
+| 测试 | JUnit 5 + Mockito + MockMvc、Testcontainers 集成测试 | 测试 七 |
+
+**阶段三：微服务 + DevOps（P2）**
+
+| 模块 | 知识点 | 对应技能图谱 |
+|------|--------|-------------|
+| Spring Cloud | Nacos 注册/配置中心、Gateway 网关、Sentinel 熔断限流 | Spring 生态 2.2 |
+| 远程调用 | OpenFeign / RestClient + LoadBalancer | Spring 生态 2.2 |
+| 链路追踪 | Micrometer Tracing + Zipkin / SkyWalking | Spring 生态 2.2 |
+| Docker | 镜像构建、多阶段构建、Docker Compose | DevOps 5.3 |
+| Kubernetes | Pod/Deployment/Service/Ingress/HPA | DevOps 5.3 |
+| CI/CD | GitLab CI 流水线、SonarQube 代码扫描 | DevOps 5.2 |
+| 监控 | Prometheus + Grafana、ELK/Loki、AlertManager | DevOps 5.4 |
+| 秒杀进阶 | RocketMQ 延迟消息接入、库存一致性对账 | 分布式 6.2 |
+
+**阶段四：全栈扩展（P3）**
+
+| 模块 | 知识点 | 对应技能图谱 |
+|------|--------|-------------|
+| 前端核心 | TypeScript、ES6+、async/await | 前端 4.1 |
+| Vue 3 | Composition API、Vite、Pinia、Element Plus | 前端 4.2 |
+| 前端工程化 | pnpm、ESLint+Prettier、Axios 拦截器 | 前端 4.3 |
+| 中间件 | RocketMQ 事务消息、Kafka 高吞吐、Elasticsearch 全文检索 | 分布式 6.2 |
+| AI 进阶 | Spring AI 集成、RAG 企业知识库、MCP 协议 | AI 八 |
 
 ---
 
@@ -806,7 +1353,7 @@ RedisTemplate<String, Object>
 | `项目结构.md` | 目录结构 + 模块说明 | 250+ |
 | `BIG_TRANSACTION_BEST_PRACTICES.md` | 大事务最佳实践 | — |
 | `CUSTOM_TX_FRAMEWORK.md` | Tx 框架设计文档 | — |
-| `jg.md` | 本文件 — 知识点总结提炼 | — |
+| `jg.md` | 本文件 — 知识点总结提炼 + java26s 技能图谱 | — |
 
 ---
 
@@ -840,4 +1387,4 @@ src/main/java/com/example/transaction/jvm/
 
 ---
 
-*transaction-demo | Spring Boot 3.2.5 | Java 17 | 89 个源文件 | 2026-06-05*
+*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 90+ 个源文件 | 2026-06-09*

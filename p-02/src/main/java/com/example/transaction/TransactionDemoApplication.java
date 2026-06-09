@@ -2,6 +2,7 @@ package com.example.transaction;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Java 数据库事务全过程研究
@@ -21,6 +22,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * 10. MyBatis vs JPA 事务对比
  */
 @SpringBootApplication
+@EnableScheduling
 public class TransactionDemoApplication {
 
     public static void main(String[] args) {

@@ -1,0 +1,32 @@
+# Spring Boot RocketMQ 配置示例
+# 将此配置合并到你的 application.yml
+
+# 1. Maven 依赖 (pom.xml)
+# <dependency>
+#     <groupId>org.apache.rocketmq</groupId>
+#     <artifactId>rocketmq-spring-boot-starter</artifactId>
+#     <version>2.3.1</version>
+# </dependency>
+
+# 2. application.yml 配置
+rocketmq:
+  name-server: localhost:9876
+  producer:
+    group: ${spring.application.name}-producer
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+    retry-times-when-send-async-failed: 2
+    max-message-size: 4194304  # 4MB
+    compress-message-body-threshold: 4096  # 4KB
+
+# 3. 自定义配置（可选）
+custom:
+  rocketmq:
+    topics:
+      order: ORDER_TOPIC
+      user: USER_TOPIC
+      notification: NOTIFICATION_TOPIC
+    consumer-groups:
+      order: order-consumer-group
+      user: user-consumer-group
+      notification: notification-consumer-group
