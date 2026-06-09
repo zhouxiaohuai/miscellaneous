@@ -1,6 +1,6 @@
 # Java 全栈学习 — 知识点总结提炼
 
-> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 90+ 个源文件
+> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 100+ 个源文件
 > 最后更新：2026-06-09
 
 ---
@@ -41,10 +41,11 @@
 ## 项目全景
 
 ```
-p-02 (90+ files)
+p-02 (100+ files)
 ├── 事务模块 (13 services + 4 controllers)     ← 核心深度
 ├── Redis 模块 (5 services)                    ← 已实现
 ├── 秒杀模块 (10 files)                        ← 场景驱动学习
+├── 并发模块 (10 files)                        ← 新增 ✅
 ├── 架构模式模块 (18 files)                     ← 已实现
 ├── JVM 模块 (14 files)                        ← 已完成
 └── 配置 + 实体 + ORM (15 files)               ← 基础设施
@@ -649,6 +650,215 @@ Bootstrap ClassLoader  → java.lang.*（C++ 实现）
 | Cleaner | 确定 | 不可以 | 好 | **推荐** |
 
 **代码体现**：`FinalizeVsCleanerDemo` — finalize 问题、Cleaner 演示、PhantomReference。
+
+---
+
+## 八、并发编程模块（由浅入深）
+
+### 8.1 线程基础
+
+| 知识点 | 核心内容 | 代码体现 |
+|--------|---------|---------|
+| 线程创建 | 3 种方式：Thread/Runnable/Callable+FutureTask | `ThreadBasicDemo.threadCreation()` |
+| 线程生命周期 | 6 种状态：NEW→RUNNABLE→BLOCKED/WAITING/TIMED_WAITING→TERMINATED | `ThreadBasicDemo.threadLifecycle()` |
+| 线程控制 | sleep（不释放锁）、join（wait 实现）、interrupt（中断机制） | `ThreadBasicDemo.threadControl()` |
+| synchronized | 对象锁/类锁、可重入性、代码块优于方法 | `SynchronizedDemo.synchronizedBasics()` |
+| wait/notify | 线程通信、虚假唤醒（while 循环）、必须在 synchronized 内 | `SynchronizedDemo.waitNotify()` |
+| 生产者消费者 | 有界缓冲区、wait/notify 配合、BlockingQueue 替代方案 | `SynchronizedDemo.producerConsumer()` |
+
+### 8.2 线程池
+
+**ThreadPoolExecutor 7 大参数（餐厅类比）**：
+
+```
+corePoolSize    = 正式员工（常驻，即使空闲也不解雇）
+maximumPoolSize = 最大员工数（正式 + 临时）
+keepAliveTime   = 临时员工空闲多久后解雇
+workQueue       = 等候区（顾客排队）
+threadFactory   = 员工招聘方式（线程命名）
+handler         = 满员处理方式（拒绝策略）
+```
+
+**4 种内置线程池**：
+
+| 类型 | 特点 | ⚠️ 隐患 |
+|------|------|---------|
+| FixedThreadPool | 固定线程数，LinkedBlockingQueue | 队列无界 → OOM |
+| SingleThreadExecutor | 单线程，顺序执行 | 队列无界 → OOM |
+| CachedThreadPool | 无核心线程，Integer.MAX_VALUE | 线程数无上限 → OOM |
+| ScheduledThreadPool | 定时/周期执行 | 队列无界 → OOM |
+
+**4 种拒绝策略**：
+
+| 策略 | 行为 | 推荐 |
+|------|------|------|
+| AbortPolicy | 抛 RejectedExecutionException | ✅ 推荐（调用方感知） |
+| CallerRunsPolicy | 调用者线程执行 | 降速但不丢任务 |
+| DiscardPolicy | 静默丢弃 | ❌ 危险 |
+| DiscardOldestPolicy | 丢弃最老任务 | ❌ 危险 |
+
+**池大小公式**：
+- CPU 密集型：N + 1（N = CPU 核心数）
+- IO 密集型：N × 2 或 N / (1 - 阻塞系数)
+- 最终需压测调整
+
+**代码体现**：`ThreadPoolDemo`（7 参数/内置池/拒绝策略/监控）、`ThreadPoolPracticeDemo`（调优/关闭/编排）
+
+### 8.3 CompletableFuture
+
+**创建方式**：
+
+| 方法 | 返回值 | 默认线程池 |
+|------|--------|-----------|
+| supplyAsync(fn) | CompletableFuture<T> | ForkJoinPool.commonPool() |
+| runAsync(fn) | CompletableFuture<Void> | ForkJoinPool.commonPool() |
+| supplyAsync(fn, pool) | CompletableFuture<T> | 自定义（推荐） |
+
+**链式调用**：
+
+| 方法 | 签名 | 类比 |
+|------|------|------|
+| thenApply(f) | T → R | Stream.map() |
+| thenAccept(f) | T → void | Stream.forEach() |
+| thenRun(f) | () → void | 不关心结果 |
+| thenCompose(f) | T → CF<R> | Stream.flatMap() |
+
+**组合编排**：
+
+| 方法 | 场景 |
+|------|------|
+| thenCombine(cf, fn) | 两任务并行 → 合并结果 |
+| allOf(cf...) | N 任务 → 全部完成 |
+| anyOf(cf...) | N 任务 → 最先完成 |
+
+**异常处理**：
+
+| 方法 | 行为 | 类比 |
+|------|------|------|
+| exceptionally(f) | 异常降级 | catch |
+| handle(f) | 成功或失败都处理 | try-catch |
+| whenComplete(f) | 监听结果，不改变 | finally |
+| completeOnTimeout(v, t) | 超时返回默认值 | JDK 9+ |
+| orTimeout(t) | 超时抛 TimeoutException | JDK 9+ |
+
+**实战场景**：
+- **并行查询**：用户+订单+积分+推荐，allOf 聚合，耗时取最慢的（350ms → 150ms）
+- **秒杀异步化**：Redis 预检(同步) → DB 扣减(同步) → 通知+统计(异步不阻塞)
+- **超时重试**：completeOnTimeout + 指数退避重试
+
+**代码体现**：`CompletableFutureDemo`（创建/链式/组合/异常）、`CompletableFuturePracticeDemo`（并行查询/超时重试/秒杀异步化）
+
+### 8.4 并发工具
+
+| 工具 | 本质 | 场景 | 特点 |
+|------|------|------|------|
+| CountDownLatch | 倒计数器 | 主线程等 N 个子任务完成 | 一次性 |
+| CyclicBarrier | 循环屏障 | N 个线程互相等待后一起继续 | 可重用 |
+| Semaphore | 信号量 | 控制并发数（连接池、限流） | 可动态 |
+
+**代码体现**：`ConcurrentUtilityDemo` — 三个工具各一个完整演示。
+
+### 8.5 锁机制
+
+| 锁 | 特点 | 适用场景 |
+|----|------|---------|
+| synchronized | JVM 内置、自动释放、简单 | 通用场景（优先选择） |
+| ReentrantLock | 手动释放、可中断、tryLock、公平锁 | 需要高级特性时 |
+| ReadWriteLock | 读共享写独占 | 读多写少 |
+| StampedLock | 乐观读 + 悲观读 + 写锁 | 读 >> 写（99:1） |
+
+**锁选择决策树**：
+```
+读写比例？
+├── 读 ≈ 写 → synchronized / ReentrantLock
+├── 读 > 写 → ReadWriteLock
+└── 读 >> 写 → StampedLock 乐观读
+```
+
+**代码体现**：`LockDemo` — ReentrantLock/ReadWriteLock/StampedLock 各一个完整演示。
+
+### 8.6 原子类与并发集合
+
+**原子类**：
+
+| 类 | 特点 | 场景 |
+|----|------|------|
+| AtomicInteger/Long | CAS 无锁 | 计数器（低并发） |
+| AtomicReference | 对象引用原子更新 | 状态机 |
+| AtomicStampedReference | 版本号解决 ABA | 防 ABA |
+| LongAdder | 分段累加，高并发性能好 | 计数器（高并发） |
+
+**CAS 原理**：Compare-And-Swap，CPU 指令级支持，无锁自旋。
+
+**ConcurrentHashMap 演进**：
+- JDK 7：Segment 分段锁（默认 16 段，并发度 16）
+- JDK 8：CAS + synchronized（锁单个桶，并发度 = 数组长度）
+
+**代码体现**：`AtomicDemo` — CAS/ABA/LongAdder/ConcurrentHashMap 各有演示。
+
+### 8.7 并发模块文件结构
+
+```
+src/main/java/com/example/transaction/concurrent/
+├── basic/                              # 线程基础（入门）
+│   ├── ThreadBasicDemo.java            # 创建/生命周期/控制
+│   └── SynchronizedDemo.java           # synchronized/wait-notify/生产者消费者
+│
+├── pool/                               # 线程池（核心）
+│   ├── ThreadPoolDemo.java             # 7参数/内置池/拒绝策略/监控
+│   └── ThreadPoolPracticeDemo.java     # 调优/关闭/编排
+│
+├── completable/                        # CompletableFuture（进阶）
+│   ├── CompletableFutureDemo.java      # 创建/链式/组合/异常
+│   └── CompletableFuturePracticeDemo.java # 并行查询/超时重试/秒杀异步化
+│
+├── utility/                            # 并发工具（拓展）
+│   └── ConcurrentUtilityDemo.java      # CountDownLatch/CyclicBarrier/Semaphore
+│
+├── lock/                               # 锁机制（深入）
+│   └── LockDemo.java                   # ReentrantLock/ReadWriteLock/StampedLock
+│
+├── atomic/                             # 原子类与并发集合（深入）
+│   └── AtomicDemo.java                 # CAS/LongAdder/ConcurrentHashMap
+│
+└── controller/
+    └── ConcurrentDemoController.java   # ~30 个 REST 接口
+```
+
+### 8.8 并发模块接口速查
+
+| 路径 | 说明 |
+|------|------|
+| `/api/concurrent/overview` | 全部接口索引（学习路径） |
+| `/api/concurrent/basic/creation` | 线程创建 3 种方式 |
+| `/api/concurrent/basic/lifecycle` | 线程生命周期 6 种状态 |
+| `/api/concurrent/basic/control` | sleep/join/interrupt |
+| `/api/concurrent/sync/basics` | synchronized 基础 |
+| `/api/concurrent/sync/wait-notify` | wait/notify 机制 |
+| `/api/concurrent/sync/producer-consumer` | 生产者消费者 |
+| `/api/concurrent/pool/parameters` | 7 大参数详解 |
+| `/api/concurrent/pool/built-in` | 4 种内置线程池 |
+| `/api/concurrent/pool/rejection` | 4 种拒绝策略 |
+| `/api/concurrent/pool/monitoring` | 运行时监控 |
+| `/api/concurrent/pool/sizing` | 池大小选择 |
+| `/api/concurrent/pool/shutdown` | 优雅关闭 |
+| `/api/concurrent/pool/orchestration` | 任务编排 |
+| `/api/concurrent/completable/creation` | 创建方式 |
+| `/api/concurrent/completable/chaining` | 链式调用 |
+| `/api/concurrent/completable/combination` | 组合编排 |
+| `/api/concurrent/completable/exception` | 异常处理 |
+| `/api/concurrent/completable/parallel-query` | 并行查询实战 |
+| `/api/concurrent/completable/timeout-retry` | 超时重试 |
+| `/api/concurrent/completable/seckill-async` | 秒杀异步化 |
+| `/api/concurrent/utility/countdown-latch` | CountDownLatch |
+| `/api/concurrent/utility/cyclic-barrier` | CyclicBarrier |
+| `/api/concurrent/utility/semaphore` | Semaphore |
+| `/api/concurrent/lock/reentrant` | ReentrantLock |
+| `/api/concurrent/lock/read-write` | ReadWriteLock |
+| `/api/concurrent/lock/stamped` | StampedLock |
+| `/api/concurrent/atomic/basics` | 原子类基础 |
+| `/api/concurrent/atomic/long-adder` | LongAdder |
+| `/api/concurrent/atomic/concurrent-hashmap` | ConcurrentHashMap |
 
 ---
 
@@ -1301,6 +1511,7 @@ ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
 | **JVM 执行原理** | 字节码、类加载 5 阶段、双亲委派、类加载器层级、JIT 编译、分层编译 | ⭐⭐⭐⭐⭐ |
 | **JVM 垃圾回收** | GC 算法、七种收集器、内存泄漏、GC 调优、finalize vs Cleaner | ⭐⭐⭐⭐⭐ |
 | **秒杀系统** | Redis Lua 原子操作、延迟队列、滑动窗口限流、分布式锁、乐观锁/悲观锁 | ⭐⭐⭐⭐⭐ |
+| **并发编程** | 线程基础、线程池 7 参数、CompletableFuture、CountDownLatch/CyclicBarrier/Semaphore、ReentrantLock/ReadWriteLock/StampedLock、CAS/LongAdder/ConcurrentHashMap | ⭐⭐⭐⭐⭐ |
 
 ### 待学习 ⬜（按 java26s 技能图谱对齐）
 
@@ -1314,7 +1525,7 @@ ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
 
 | 模块 | 知识点 | 对应技能图谱 |
 |------|--------|-------------|
-| 并发编程 | 线程池 7 参数、CompletableFuture、CountDownLatch、Semaphore | Java 核心 1.3 |
+| ~~并发编程~~ | ✅ 已完成（线程池/CompletableFuture/并发工具/锁/原子类） | Java 核心 1.3 |
 | Virtual Threads | Project Loom 轻量级线程、高并发 IO | Java 核心 1.1 |
 | Spring Security | JWT Token（Access+Refresh）、RBAC、OAuth2 授权服务器 | Spring 生态 2.3 |
 | 测试 | JUnit 5 + Mockito + MockMvc、Testcontainers 集成测试 | 测试 七 |
@@ -1387,4 +1598,4 @@ src/main/java/com/example/transaction/jvm/
 
 ---
 
-*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 90+ 个源文件 | 2026-06-09*
+*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 100+ 个源文件 | 2026-06-09*
