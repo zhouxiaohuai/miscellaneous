@@ -1,7 +1,7 @@
 # Java 全栈学习 — 知识点总结提炼
 
-> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 100+ 个源文件
-> 最后更新：2026-06-09
+> 项目：transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 130+ 个源文件
+> 最后更新：2026-06-10
 
 ---
 
@@ -13,8 +13,8 @@
 |------|------|------|---------|
 | **Java 核心** | 语言基础 (Record/Sealed/Pattern Matching) | ✅ | 项目中已用 Record + Sealed |
 | | Virtual Threads (Project Loom) | ⬜ | — |
-| | JVM 内存/GC/调优 | ✅ | `jvm/` 14 个 Demo |
-| | 并发编程 (线程池/CompletableFuture) | ⬜ | — |
+| | JVM 内存/GC/调优 | ✅ | `jvm/` 14 个 Demo + GC 深度文档 |
+| | 并发编程 (线程池/CompletableFuture) | ✅ | `concurrent/` 11 个 Demo，40+ 接口 |
 | **Spring 生态** | Spring Boot 3.x 核心 | ✅ | 全项目基础 |
 | | Spring Cloud 微服务 | ⬜ | — |
 | | Spring Security + OAuth2 | ⬜ | — |
@@ -35,21 +35,22 @@
 | **AI 辅助** | Claude Code / Copilot | ✅ | 当前使用中 |
 | | Spring AI / RAG | ⬜ | — |
 
-**掌握度统计**：✅ 11 项 / ⬜ 10 项 = 52%
+**掌握度统计**：✅ 12 项 / ⬜ 9 项 = 57%
 
 ---
 
 ## 项目全景
 
 ```
-p-02 (120+ files)
+p-02 (130+ files)
 ├── 事务模块 (13 services + 4 controllers)     ← 核心深度
 ├── Redis 模块 (5 services)                    ← 已实现
 ├── 秒杀模块 (10 files)                        ← 场景驱动学习
-├── 流程引擎模块 (21 files)                    ← 新增 ✅ 通用流程引擎
-├── 并发模块 (10 files)                        ← 已实现
+├── 流程引擎模块 (21 files)                    ← 通用流程引擎
+├── 并发模块 (11 files)                        ← 已完成 ✅（含 CAS 深度）
 ├── 架构模式模块 (18 files)                     ← 已实现
 ├── JVM 模块 (14 files)                        ← 已完成
+├── RocketMQ 环境 (podman 容器)                ← 环境已搭建
 └── 配置 + 实体 + ORM (15 files)               ← 基础设施
 ```
 
@@ -796,7 +797,58 @@ handler         = 满员处理方式（拒绝策略）
 - JDK 7：Segment 分段锁（默认 16 段，并发度 16）
 - JDK 8：CAS + synchronized（锁单个桶，并发度 = 数组长度）
 
-**代码体现**：`AtomicDemo` — CAS/ABA/LongAdder/ConcurrentHashMap 各有演示。
+**代码体现**：`AtomicDemo` — LongAdder/ConcurrentHashMap 各有演示。
+
+### 8.6.1 CAS 深度解析
+
+**CAS 三要素**：
+
+| 要素 | 含义 | 说明 |
+|------|------|------|
+| V (Value) | 内存中的值 | 要修改的变量 |
+| A (Expected) | 预期的旧值 | 读取时的值 |
+| B (New Value) | 要设置的新值 | 更新后的值 |
+
+**CAS 执行流程**：
+```
+读取 V → 比较 V == A ? → 是：V = B（成功）→ 否：返回失败（重试）
+```
+
+**CAS 底层调用链**：
+```
+Java: AtomicInteger.incrementAndGet()
+  ↓
+JDK: Unsafe.getAndAddInt()
+  ↓
+JNI: Atomic::cmpxchg()
+  ↓
+CPU: lock cmpxchg 指令（原子操作）
+```
+
+**CAS vs synchronized**：
+
+| 对比项 | CAS | synchronized |
+|--------|-----|--------------|
+| 类型 | 乐观锁（无锁） | 悲观锁（有锁） |
+| 阻塞 | 不阻塞，自旋重试 | 阻塞线程 |
+| 上下文切换 | 无 | 有 |
+| 适用场景 | 竞争不激烈 | 竞争激烈 |
+| CPU 开销 | 竞争大时空转 | 阻塞时让出 CPU |
+
+**ABA 问题与解决**：
+
+| 方案 | 原理 | 适用场景 |
+|------|------|---------|
+| AtomicStampedReference | 版本号（int stamp） | 需要知道改了几次 |
+| AtomicMarkableReference | 布尔标记 | 只需知道有没有改过 |
+
+**CAS 实战应用**：
+- 自旋锁：`AtomicBoolean` + CAS 循环
+- 无锁栈/队列：CAS 更新头节点
+- 原子计数器：`AtomicInteger/Long`
+- 高并发累加：`LongAdder`（分段减少竞争）
+
+**代码体现**：`CasDemo` — CAS原理/底层实现/volatile作用/ABA问题/自旋锁。
 
 ### 8.7 并发模块文件结构
 
@@ -821,10 +873,13 @@ src/main/java/com/example/transaction/concurrent/
 │   └── LockDemo.java                   # ReentrantLock/ReadWriteLock/StampedLock
 │
 ├── atomic/                             # 原子类与并发集合（深入）
-│   └── AtomicDemo.java                 # CAS/LongAdder/ConcurrentHashMap
+│   └── AtomicDemo.java                 # LongAdder/ConcurrentHashMap
+│
+├── cas/                                # CAS 深度（新增）
+│   └── CasDemo.java                    # CAS原理/底层实现/ABA问题/自旋锁
 │
 └── controller/
-    └── ConcurrentDemoController.java   # ~30 个 REST 接口
+    └── ConcurrentDemoController.java   # ~40 个 REST 接口
 ```
 
 ### 8.8 并发模块接口速查
@@ -861,6 +916,12 @@ src/main/java/com/example/transaction/concurrent/
 | `/api/concurrent/atomic/basics` | 原子类基础 |
 | `/api/concurrent/atomic/long-adder` | LongAdder |
 | `/api/concurrent/atomic/concurrent-hashmap` | ConcurrentHashMap |
+| `/api/concurrent/cas/basics` | CAS 基础概念 |
+| `/api/concurrent/cas/internals` | CAS 底层原理 |
+| `/api/concurrent/cas/vs-synchronized` | CAS vs synchronized |
+| `/api/concurrent/cas/spin` | CAS 自旋重试 |
+| `/api/concurrent/cas/aba` | ABA 问题与解决 |
+| `/api/concurrent/cas/practice` | CAS 实战应用 |
 
 ---
 
@@ -1414,9 +1475,9 @@ src/main/java/com/example/transaction/workflow/
 
 ---
 
-## 十、并发编程速查（java26s 1.3 — 待实操）
+## 十、并发编程速查（java26s 1.3 — ✅ 已完成）
 
-> 状态：⬜ 待学习 | 对应技能图谱 Java 核心 1.3
+> 状态：✅ 已完成 | 对应技能图谱 Java 核心 1.3 | 详细内容见上方第八章
 
 ### 9.1 线程池 ThreadPoolExecutor — 7 参数
 
@@ -1657,7 +1718,7 @@ ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
 | **JVM 垃圾回收** | GC 算法、七种收集器、内存泄漏、GC 调优、finalize vs Cleaner | ⭐⭐⭐⭐⭐ |
 | **秒杀系统** | Redis Lua 原子操作、延迟队列、滑动窗口限流、分布式锁、乐观锁/悲观锁 | ⭐⭐⭐⭐⭐ |
 | **流程引擎** | 状态机、SpEL 条件分支、业务绑定、节点流转、自动/人工任务 | ⭐⭐⭐⭐⭐ |
-| **并发编程** | 线程基础、线程池 7 参数、CompletableFuture、CountDownLatch/CyclicBarrier/Semaphore、ReentrantLock/ReadWriteLock/StampedLock、CAS/LongAdder/ConcurrentHashMap | ⭐⭐⭐⭐⭐ |
+| **并发编程** | 线程基础、线程池 7 参数、CompletableFuture、CountDownLatch/CyclicBarrier/Semaphore、ReentrantLock/ReadWriteLock/StampedLock、CAS原理/ABA问题/自旋锁、LongAdder/ConcurrentHashMap | ⭐⭐⭐⭐⭐ |
 
 ### 待学习 ⬜（按 java26s 技能图谱对齐）
 
@@ -1711,6 +1772,8 @@ ENTRYPOINT ["java", "-XX:+UseZGC", "-jar", "app.jar"]
 | `BIG_TRANSACTION_BEST_PRACTICES.md` | 大事务最佳实践 | — |
 | `CUSTOM_TX_FRAMEWORK.md` | Tx 框架设计文档 | — |
 | `商业场景全景图.md` | 10 大商业场景 + 架构设计 + 技术选型 | — |
+| `jvm-gc-deep-dive.md` | JVM GC 深度解析（6 大收集器） | — |
+| `rocketmq/README.md` | RocketMQ 容器环境搭建 | — |
 | `jg.md` | 本文件 — 知识点总结提炼 + java26s 技能图谱 | — |
 
 ---
@@ -1745,4 +1808,4 @@ src/main/java/com/example/transaction/jvm/
 
 ---
 
-*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 100+ 个源文件 | 2026-06-09*
+*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 130+ 个源文件 | 2026-06-10*

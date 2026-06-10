@@ -3,6 +3,7 @@ package com.example.transaction.concurrent.controller;
 import com.example.transaction.concurrent.atomic.AtomicDemo;
 import com.example.transaction.concurrent.basic.SynchronizedDemo;
 import com.example.transaction.concurrent.basic.ThreadBasicDemo;
+import com.example.transaction.concurrent.cas.CasDemo;
 import com.example.transaction.concurrent.completable.CompletableFutureDemo;
 import com.example.transaction.concurrent.completable.CompletableFuturePracticeDemo;
 import com.example.transaction.concurrent.lock.LockDemo;
@@ -19,7 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 并发编程模块 — REST 接口（约 30 个端点）
+ * 并发编程模块 — REST 接口（约 40 个端点）
  *
  * 学习路径（由浅入深）：
  * 1. /basic/*         — 线程基础（创建、生命周期、控制）
@@ -28,7 +29,8 @@ import java.util.Map;
  * 4. /completable/*   — CompletableFuture（创建、链式、组合、异常、实战）
  * 5. /utility/*       — 并发工具（CountDownLatch、CyclicBarrier、Semaphore）
  * 6. /lock/*          — 锁机制（ReentrantLock、ReadWriteLock、StampedLock）
- * 7. /atomic/*        — 原子类与并发集合（CAS、LongAdder、ConcurrentHashMap）
+ * 7. /atomic/*        — 原子类与并发集合（LongAdder、ConcurrentHashMap）
+ * 8. /cas/*           — CAS 深度（原理、ABA问题、自旋锁、无锁数据结构）
  */
 @Slf4j
 @RestController
@@ -56,6 +58,9 @@ public class ConcurrentDemoController {
 
     // ---- 第六层：原子类 ----
     private final AtomicDemo atomicDemo;
+
+    // ---- 第七层：CAS 深度 ----
+    private final CasDemo casDemo;
 
     // ==================== 第一层：线程基础 ====================
 
@@ -245,6 +250,44 @@ public class ConcurrentDemoController {
         return atomicDemo.concurrentHashMap();
     }
 
+    // ==================== 第七层：CAS 深度 ====================
+
+    /** CAS 基础概念 */
+    @GetMapping("/cas/basics")
+    public Map<String, Object> casBasics() throws Exception {
+        return casDemo.casBasics();
+    }
+
+    /** CAS 底层原理（CPU 指令/Unsafe/volatile） */
+    @GetMapping("/cas/internals")
+    public Map<String, Object> casInternals() throws Exception {
+        return casDemo.casInternals();
+    }
+
+    /** CAS vs synchronized 性能对比 */
+    @GetMapping("/cas/vs-synchronized")
+    public Map<String, Object> casVsSynchronized() throws Exception {
+        return casDemo.casVsSynchronized();
+    }
+
+    /** CAS 自旋重试机制 */
+    @GetMapping("/cas/spin")
+    public Map<String, Object> casSpin() throws Exception {
+        return casDemo.casSpin();
+    }
+
+    /** ABA 问题与解决方案 */
+    @GetMapping("/cas/aba")
+    public Map<String, Object> abaProblem() throws Exception {
+        return casDemo.abaProblem();
+    }
+
+    /** CAS 实战应用（自旋锁/无锁数据结构） */
+    @GetMapping("/cas/practice")
+    public Map<String, Object> casPractice() throws Exception {
+        return casDemo.casPractice();
+    }
+
     // ==================== 接口索引 ====================
 
     /** 全部接口索引 */
@@ -259,7 +302,8 @@ public class ConcurrentDemoController {
                 第三层：CompletableFuture（/completable/*）→ 异步编程、并行查询、秒杀异步化
                 第四层：并发工具（/utility/*）→ CountDownLatch、CyclicBarrier、Semaphore
                 第五层：锁机制（/lock/*）→ ReentrantLock、ReadWriteLock、StampedLock
-                第六层：原子类（/atomic/*）→ CAS、LongAdder、ConcurrentHashMap
+                第六层：原子类（/atomic/*）→ LongAdder、ConcurrentHashMap
+                第七层：CAS 深度（/cas/*）→ CAS 原理、ABA 问题、自旋锁
                 """);
 
         // 第一层
@@ -314,6 +358,16 @@ public class ConcurrentDemoController {
         atomic.put("/atomic/long-adder", "LongAdder 高并发累加");
         atomic.put("/atomic/concurrent-hashmap", "ConcurrentHashMap（JDK7→8 演进/新 API）");
         result.put("第六层：原子类与并发集合", atomic);
+
+        // 第七层
+        Map<String, String> cas = new LinkedHashMap<>();
+        cas.put("/cas/basics", "CAS 基础概念（三要素/竞争演示）");
+        cas.put("/cas/internals", "CAS 底层原理（CPU指令/Unsafe/volatile）");
+        cas.put("/cas/vs-synchronized", "CAS vs synchronized 性能对比");
+        cas.put("/cas/spin", "CAS 自旋重试机制");
+        cas.put("/cas/aba", "ABA 问题与解决方案");
+        cas.put("/cas/practice", "CAS 实战应用（自旋锁/无锁数据结构）");
+        result.put("第七层：CAS 深度", cas);
 
         return result;
     }
