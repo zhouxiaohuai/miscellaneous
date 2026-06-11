@@ -63,3 +63,11 @@ logging:
     org.springframework.transaction: TRACE
     org.springframework.orm.jpa: DEBUG
     com.example.transaction: DEBUG
+
+# JWT 配置
+# secret 必须是 Base64 编码的 256 位密钥，生产环境务必更换！
+# 生成方式：openssl rand -base64 32
+jwt:
+  secret: dGhpcyBpcyBhIHNlY3JldCBrZXkgZm9yIEpXVCB0b2tlbiBnZW5lcmF0aW9uIDIwMjQ=
+  access-token-expiration: 1800000     # 30 分钟（毫秒）
+  refresh-token-expiration: 604800000  # 7 天（毫秒）

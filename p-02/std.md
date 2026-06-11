@@ -850,6 +850,421 @@ CPU: lock cmpxchg 指令（原子操作）
 
 **代码体现**：`CasDemo` — CAS原理/底层实现/volatile作用/ABA问题/自旋锁。
 
+### 8.6.2 JUC 全景图（java.util.concurrent）
+
+```
+java.util.concurrent
+├── 线程池
+│   ├── Executor / ExecutorService / ScheduledExecutorService
+│   ├── ThreadPoolExecutor / ScheduledThreadPoolExecutor
+│   ├── ForkJoinPool
+│   └── Executors（工厂类）
+│
+├── 锁
+│   ├── Lock / ReentrantLock
+│   ├── ReadWriteLock / ReentrantReadWriteLock
+│   ├── StampedLock
+│   └── Condition
+│
+├── 并发工具
+│   ├── CountDownLatch
+│   ├── CyclicBarrier
+│   ├── Semaphore
+│   ├── Phaser
+│   └── Exchanger
+│
+├── 原子类（java.util.concurrent.atomic）
+│   ├── AtomicInteger / AtomicLong / AtomicBoolean
+│   ├── AtomicReference / AtomicStampedReference / AtomicMarkableReference
+│   ├── LongAdder / LongAccumulator
+│   └── DoubleAdder / DoubleAccumulator
+│
+├── 并发集合
+│   ├── ConcurrentHashMap
+│   ├── ConcurrentSkipListMap / ConcurrentSkipListSet
+│   ├── CopyOnWriteArrayList / CopyOnWriteArraySet
+│   ├── ConcurrentLinkedQueue / ConcurrentLinkedDeque
+│   └── LinkedTransferQueue
+│
+├── 阻塞队列
+│   ├── ArrayBlockingQueue
+│   ├── LinkedBlockingQueue
+│   ├── PriorityBlockingQueue
+│   ├── SynchronousQueue
+│   ├── DelayQueue
+│   └── LinkedTransferQueue
+│
+└── 其他
+    ├── Future / CompletableFuture / FutureTask
+    ├── ForkJoinTask / RecursiveTask / RecursiveAction
+    ├── LockSupport
+    └── ThreadLocalRandom
+```
+
+### 8.6.3 Future 与 FutureTask
+
+**Future 接口**：
+
+| 方法 | 说明 | 阻塞 |
+|------|------|------|
+| `get()` | 获取结果 | 阻塞直到完成 |
+| `get(timeout, unit)` | 超时获取 | 阻塞指定时间 |
+| `cancel(mayInterrupt)` | 取消任务 | — |
+| `isDone()` | 是否完成 | 不阻塞 |
+| `isCancelled()` | 是否取消 | 不阻塞 |
+
+**FutureTask**：既是 Runnable 又是 Future，可交给线程池执行。
+
+```java
+FutureTask<String> task = new FutureTask<>(() -> {
+    Thread.sleep(1000);
+    return "result";
+});
+new Thread(task).start();
+String result = task.get();  // 阻塞等待
+```
+
+**Future 的局限**：
+- `get()` 会阻塞，不支持链式调用
+- 不支持组合多个 Future
+- 不支持异常处理回调
+- → 这些局限催生了 CompletableFuture
+
+### 8.6.4 ForkJoinPool — 分治框架
+
+**核心思想**：大任务拆分成小任务（Fork），小任务结果合并（Join）。
+
+```
+           大任务
+          /      \
+      子任务1    子任务2
+      /    \        \
+   子任务1a  子任务1b  子任务2a
+      ↓       ↓        ↓
+    结果1a  结果1b    结果2a
+      \       |        /
+       \      |       /
+        最终合并结果
+```
+
+**核心类**：
+
+| 类 | 说明 |
+|----|------|
+| `ForkJoinPool` | 线程池，管理工作线程 |
+| `ForkJoinTask` | 任务基类（抽象） |
+| `RecursiveTask<V>` | 有返回值的递归任务 |
+| `RecursiveAction` | 无返回值的递归任务 |
+
+**工作窃取算法（Work-Stealing）**：
+- 每个工作线程有自己的双端队列
+- 空闲线程从其他线程队列尾部"偷"任务
+- 减少线程竞争，提高 CPU 利用率
+
+```java
+// 计算 1~N 的和（分治）
+public class SumTask extends RecursiveTask<Long> {
+    private final long[] array;
+    private final int start, end;
+    private static final int THRESHOLD = 1000;
+
+    @Override
+    protected Long compute() {
+        if (end - start <= THRESHOLD) {
+            long sum = 0;
+            for (int i = start; i < end; i++) sum += array[i];
+            return sum;
+        }
+        int mid = (start + end) / 2;
+        SumTask left = new SumTask(array, start, mid);
+        SumTask right = new SumTask(array, mid, end);
+        left.fork();                    // 异步执行左半部分
+        long rightResult = right.compute(); // 当前线程执行右半部分
+        long leftResult = left.join();      // 等待左半部分结果
+        return leftResult + rightResult;
+    }
+}
+
+// 使用
+ForkJoinPool pool = new ForkJoinPool();
+long result = pool.invoke(new SumTask(array, 0, array.length));
+```
+
+**ForkJoinPool vs ThreadPoolExecutor**：
+
+| 对比项 | ForkJoinPool | ThreadPoolExecutor |
+|--------|-------------|-------------------|
+| 适用场景 | 分治、递归拆分 | 通用任务 |
+| 任务窃取 | 支持 | 不支持 |
+| 队列 | 每线程独立双端队列 | 共享队列 |
+| 默认线程数 | CPU 核心数 | 1 |
+| 提交方式 | invoke/submit/fork | execute/submit |
+
+**parallelStream 背后的 ForkJoinPool**：
+```java
+// Java 8 并行流默认使用 ForkJoinPool.commonPool()
+list.parallelStream().map(...).collect(...);
+// 自定义池
+ForkJoinPool customPool = new ForkJoinPool(16);
+customPool.submit(() ->
+    list.parallelStream().map(...).collect(...)
+).get();
+```
+
+### 8.6.5 阻塞队列（BlockingQueue）
+
+**接口方法对比**：
+
+| 操作 | 抛异常 | 返回特殊值 | 阻塞 | 超时 |
+|------|--------|-----------|------|------|
+| 插入 | `add(e)` | `offer(e)` → boolean | `put(e)` | `offer(e, time, unit)` |
+| 移除 | `remove()` | `poll()` → E/null | `take()` | `poll(time, unit)` |
+| 检查 | `element()` | `peek()` → E/null | — | — |
+
+**实现类对比**：
+
+| 实现类 | 底层 | 容量 | 特点 | 场景 |
+|--------|------|------|------|------|
+| `ArrayBlockingQueue` | 数组 | 固定 | 有界、公平锁可选 | 生产者消费者 |
+| `LinkedBlockingQueue` | 链表 | 可选 | 默认 Integer.MAX_VALUE | 线程池默认 |
+| `PriorityBlockingQueue` | 堆 | 无界 | 按优先级排序 | 任务调度 |
+| `SynchronousQueue` | 无 | 0 | 不存储元素，直接传递 | CachedThreadPool |
+| `DelayQueue` | PriorityQueue | 无界 | 元素到期才能取 | 延迟任务 |
+| `LinkedTransferQueue` | 链表 | 无界 | transfer/tryTransfer | 消息传递 |
+
+**生产者消费者模式**：
+```java
+BlockingQueue<Task> queue = new ArrayBlockingQueue<>(100);
+
+// 生产者
+queue.put(task);  // 队满时阻塞
+
+// 消费者
+Task task = queue.take();  // 队空时阻塞
+```
+
+**DelayQueue 实现延迟任务**：
+```java
+public class DelayTask implements Delayed {
+    private final String name;
+    private final long expireTime;  // 到期时间戳
+
+    @Override
+    public long getDelay(TimeUnit unit) {
+        return unit.convert(expireTime - System.currentTimeMillis(), MILLISECONDS);
+    }
+
+    @Override
+    public int compareTo(Delayed o) {
+        return Long.compare(this.getDelay(MILLISECONDS), o.getDelay(MILLISECONDS));
+    }
+}
+
+// 使用
+DelayQueue<DelayTask> queue = new DelayQueue<>();
+queue.put(new DelayTask("task1", System.currentTimeMillis() + 5000));
+DelayTask task = queue.take();  // 5 秒后才能取出
+```
+
+### 8.6.6 Condition — 精细化等待通知
+
+**对比 wait/notify**：
+
+| 对比项 | wait/notify | Condition |
+|--------|-------------|-----------|
+| 绑定 | 隐式绑定对象监视器 | 显式绑定 Lock |
+| 条件队列 | 每个对象一个 | 可创建多个 |
+| 唤醒方式 | notifyAll 唤醒全部 | signalAll 精确唤醒 |
+| 可中断 | 不支持 | 支持 awaitInterruptibly |
+| 超时 | 支持 | 支持 |
+| 公平 | 不支持 | 支持（取决于 Lock） |
+
+```java
+ReentrantLock lock = new ReentrantLock();
+Condition notFull = lock.newCondition();   // 队列未满
+Condition notEmpty = lock.newCondition();  // 队列非空
+
+// 生产者
+lock.lock();
+try {
+    while (queue.isFull()) notFull.await();
+    queue.add(item);
+    notEmpty.signal();  // 精确唤醒消费者
+} finally {
+    lock.unlock();
+}
+
+// 消费者
+lock.lock();
+try {
+    while (queue.isEmpty()) notEmpty.await();
+    Item item = queue.poll();
+    notFull.signal();  // 精确唤醒生产者
+} finally {
+    lock.unlock();
+}
+```
+
+### 8.6.7 LockSupport — 线程阻塞原语
+
+**底层工具**，Lock/Condition/线程池的基础设施。
+
+| 方法 | 说明 |
+|------|------|
+| `park()` | 阻塞当前线程 |
+| `parkNanos(nanos)` | 阻塞指定纳秒 |
+| `parkUntil(deadline)` | 阻塞到指定时间 |
+| `unpark(thread)` | 唤醒指定线程 |
+
+**特点**：
+- 不需要在 synchronized 块内调用
+- `unpark` 可以在 `park` 之前调用（许可证机制）
+- 不会抛 InterruptedException
+
+```java
+// 简单实现
+Thread t = new Thread(() -> {
+    System.out.println("线程准备阻塞");
+    LockSupport.park();  // 阻塞
+    System.out.println("线程被唤醒");
+});
+t.start();
+Thread.sleep(1000);
+LockSupport.unpark(t);  // 唤醒
+```
+
+**park/unpark vs wait/notify**：
+
+| 对比项 | wait/notify | park/unpark |
+|--------|-------------|-------------|
+| 前置条件 | 必须在 synchronized 内 | 无 |
+| 唤醒精度 | notify 随机唤醒一个 | unpark 指定线程 |
+| 先唤醒后阻塞 | 死锁 | 正常（许可证机制） |
+| 底层实现 | JVM 监视器 | Unsafe（操作系统） |
+
+### 8.6.8 Phaser — 灵活同步屏障
+
+**替代 CyclicBarrier + CountDownLatch**，更灵活。
+
+| 特性 | CyclicBarrier | Phaser |
+|------|---------------|--------|
+| 可重用 | 是 | 是 |
+| 动态注册 | 否 | 是（bulkRegister/register） |
+| 阶段 | 固定 | 多阶段（getPhase） |
+| 到达即走 | 否 | 是（arriveAndAwaitAdvance vs arriveAndDeregister） |
+
+```java
+Phaser phaser = new Phaser(3);  // 3 个参与者
+
+// 线程 1
+phaser.arriveAndAwaitAdvance();  // 到达并等待
+
+// 线程 2
+phaser.arriveAndAwaitAdvance();
+
+// 线程 3
+phaser.arriveAndAwaitAdvance();  // 全部到达，进入下一阶段
+
+// 动态增加参与者
+phaser.register();  // 注册新参与者
+```
+
+### 8.6.9 Exchanger — 线程间交换数据
+
+```java
+Exchanger<String> exchanger = new Exchanger<>();
+
+// 线程 A
+String dataA = "来自A的数据";
+String dataB = exchanger.exchange(dataA);  // 阻塞等待线程B
+
+// 线程 B
+String dataB = "来自B的数据";
+String dataA = exchanger.exchange(dataB);  // 交换数据
+```
+
+**场景**：管道设计、校验和对比、遗传算法。
+
+### 8.6.10 并发集合详解
+
+**ConcurrentHashMap**（JDK 8）：
+
+```
+数据结构：Node[] + 链表/红黑树（同 HashMap）
+并发控制：CAS（空桶） + synchronized（非空桶）
+扩容：多线程协助迁移（transfer）
+```
+
+| 操作 | 线程安全 | 说明 |
+|------|---------|------|
+| `put` | CAS + synchronized | 空桶 CAS，非空桶锁头节点 |
+| `get` | 无锁 | volatile 保证可见性 |
+| `size` | 分段计数 | baseCount + CounterCell[] |
+| `compute/merge` | 锁桶 | 原子复合操作 |
+
+**CopyOnWriteArrayList**：
+
+```
+写时复制：修改时复制整个数组，写完替换引用
+适用场景：读多写少（监听器列表、配置缓存）
+```
+
+| 对比 | ArrayList | CopyOnWriteArrayList | Collections.synchronizedList |
+|------|-----------|---------------------|-----------------------------|
+| 线程安全 | 否 | 是 | 是 |
+| 读性能 | 快 | 快 | 慢（加锁） |
+| 写性能 | 快 | 慢（复制） | 慢（加锁） |
+| 迭代器 | fail-fast | 快照 | fail-fast |
+| 适用 | 单线程 | 读 >> 写 | 通用 |
+
+**ConcurrentSkipListMap**：
+
+```
+跳表实现的有序并发 Map
+时间复杂度：O(log n)
+替代：Collections.synchronizedSortedMap + TreeMap
+```
+
+### 8.6.11 ThreadLocalRandom
+
+**替代 Random**，多线程下性能更好。
+
+```java
+// Random（多线程竞争同一个 seed）
+Random random = new Random();
+int value = random.nextInt(100);
+
+// ThreadLocalRandom（每个线程独立的 seed）
+int value = ThreadLocalRandom.current().nextInt(100);
+```
+
+**原理**：每个线程维护自己的种子，CAS 只在初始化时竞争一次。
+
+**性能对比**：
+
+| 线程数 | Random | ThreadLocalRandom |
+|--------|--------|-------------------|
+| 1 | 1x | 1x |
+| 16 | 5x 慢 | 1x |
+| 64 | 20x 慢 | 1x |
+
+### 8.6.12 JUC 组件选型速查
+
+| 需求 | 推荐方案 | 备选 |
+|------|---------|------|
+| 线程池 | ThreadPoolExecutor | ForkJoinPool（分治） |
+| 异步编排 | CompletableFuture | Future（简单场景） |
+| 等待 N 个任务 | CountDownLatch | Phaser |
+| N 个线程同步点 | CyclicBarrier | Phaser |
+| 控制并发数 | Semaphore | — |
+| 读写分离锁 | ReadWriteLock | StampedLock |
+| 高并发计数 | LongAdder | AtomicLong（低并发） |
+| 线程安全 Map | ConcurrentHashMap | ConcurrentSkipListMap（有序） |
+| 读多写少 List | CopyOnWriteArrayList | — |
+| 延迟任务 | DelayQueue | ScheduledThreadPool |
+| 线程间交换数据 | Exchanger | — |
+| 随机数 | ThreadLocalRandom | Random |
+
 ### 8.7 并发模块文件结构
 
 ```
@@ -1808,4 +2223,72 @@ src/main/java/com/example/transaction/jvm/
 
 ---
 
-*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 130+ 个源文件 | 2026-06-10*
+---
+
+## 十六、JVM 常量池体系深入（2026-06-11 新增）
+
+### 16.1 三层常量池架构
+
+```
+Class 常量池（.class 文件，编译期）
+        ↓ 类加载
+运行时常量池（方法区/元空间，可动态扩展）
+        ↓ intern()
+字符串常量池（堆，全局唯一，哈希表结构）
+```
+
+### 16.2 核心区别
+
+| 维度 | Class 常量池 | 运行时常量池 | 字符串常量池 |
+|------|-------------|-------------|-------------|
+| **位置** | .class 文件 | 方法区/元空间 | 堆 |
+| **时机** | 编译期 | 类加载时 | 字面量自动 / intern() 手动 |
+| **内容** | 17 种常量类型 | 所有类型（符号引用→直接引用） | 仅 String 对象引用 |
+| **数量** | 每类一个 | 每类一个 | 全局一个 |
+| **可变性** | 不可变 | 可变 | 可变 |
+
+### 16.3 关键点
+
+- 三者是**包含与演化**关系，不是平行关系
+- JDK 7+ 字符串常量池从永久代移至堆（永久代空间有限，GC 不频繁，易 OOM）
+- `intern()` JDK 6 复制到永久代；JDK 7+ 只存堆中对象的引用
+- StringTable 调优：`-XX:StringTableSize=100003` 减少哈希冲突
+- 字面量拼接（编译期常量折叠）vs 运行时拼接（invokedynamic）行为不同
+
+### 16.4 堆中对象与常量池的关系
+
+**核心结论**：堆中对象的字段**不直接连接常量池**，方向是单向的：**常量池 → 对象，不是对象 → 常量池**。
+
+| 字段类型 | 与常量池关系 |
+|---------|-------------|
+| 基本类型（int/double/boolean） | 无关，值直接存在字段中 |
+| 引用类型（Object/List） | 无关，字段存引用指向堆中另一个对象 |
+| String 字面量 | 间接关联，常量池持有该 String 对象的引用 |
+| 编译期常量（static final） | 无关，内联到使用处后断开 |
+
+### 16.5 String 对象内部结构
+
+`String s = "hello";` 中的 `"hello"` 存在 String 对象的 `byte[] value` 数组中：
+
+```
+String 对象
+┌─────────────────────────┐
+│  对象头 (12 bytes)       │
+│  ┌───────────────────┐  │
+│  │ value ────────────┼──┼──→ byte[] {'h','e','l','l','o'}
+│  │ coder = 0 (LATIN1)│  │
+│  │ hash = 0          │  │
+│  └───────────────────┘  │
+│  （没有字段指向常量池）    │
+└─────────────────────────┘
+```
+
+**JDK 版本差异**：
+- JDK 8：`char[] value`，每字符 2 字节（UTF-16）
+- JDK 9+：`byte[] value` + `byte coder`，Latin1 字符只用 1 字节，节省内存
+
+**字符串常量池本质**：不存字符数据，只存指向 String 对象的引用（地址），底层是 HashMap。
+
+---
+
+*transaction-demo | Spring Boot 3.2.5 | Java 17/21 | 130+ 个源文件 | 最后更新：2026-06-11*

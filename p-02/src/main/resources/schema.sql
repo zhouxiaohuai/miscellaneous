@@ -122,3 +122,107 @@ CREATE TABLE IF NOT EXISTS `t_wf_instance_node` (
     KEY `idx_instance_id` (`instance_id`),
     KEY `idx_node_id` (`node_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='流程实例节点表';
+
+
+-- ========================================
+-- 权限管理系统建表脚本（RBAC 模型）
+-- ========================================
+
+-- 部门表（数据权限用）
+CREATE TABLE IF NOT EXISTS `sys_dept` (
+    `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+    `parent_id` BIGINT NOT NULL DEFAULT 0 COMMENT '父部门ID，0=顶级',
+    `dept_name` VARCHAR(50) NOT NULL COMMENT '部门名称',
+    `sort` INT DEFAULT 0 COMMENT '排序',
+    `leader` VARCHAR(50) COMMENT '负责人',
+    `phone` VARCHAR(20) COMMENT '联系电话',
+    `email` VARCHAR(100) COMMENT '邮箱',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=禁用 1=正常',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `idx_parent_id` (`parent_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部门表';
+
+-- 用户表（权限系统专用，与业务 t_user 分离）
+CREATE TABLE IF NOT EXISTS `sys_user` (
+    `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+    `username` VARCHAR(50) NOT NULL COMMENT '用户名',
+    `password` VARCHAR(200) NOT NULL COMMENT 'BCrypt加密密码',
+    `nickname` VARCHAR(50) COMMENT '昵称',
+    `email` VARCHAR(100) COMMENT '邮箱',
+    `phone` VARCHAR(20) COMMENT '手机号',
+    `avatar` VARCHAR(500) COMMENT '头像URL',
+    `dept_id` BIGINT COMMENT '所属部门ID',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=禁用 1=正常',
+    `login_ip` VARCHAR(50) COMMENT '最后登录IP',
+    `login_time` DATETIME COMMENT '最后登录时间',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_username` (`username`),
+    KEY `idx_dept_id` (`dept_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统用户表';
+
+-- 角色表
+CREATE TABLE IF NOT EXISTS `sys_role` (
+    `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+    `role_name` VARCHAR(50) NOT NULL COMMENT '角色名称',
+    `role_key` VARCHAR(50) NOT NULL COMMENT '角色标识（如 ROLE_ADMIN）',
+    `data_scope` TINYINT NOT NULL DEFAULT 1 COMMENT '数据范围：1=全部 2=本部门 3=本部门及以下 4=仅本人',
+    `sort` INT DEFAULT 0 COMMENT '排序',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=禁用 1=正常',
+    `remark` VARCHAR(500) COMMENT '备注',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_role_key` (`role_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色表';
+
+-- 权限表（菜单/按钮/接口统一管理）
+CREATE TABLE IF NOT EXISTS `sys_permission` (
+    `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+    `parent_id` BIGINT NOT NULL DEFAULT 0 COMMENT '父权限ID，0=顶级',
+    `name` VARCHAR(50) NOT NULL COMMENT '权限名称',
+    `perm_key` VARCHAR(100) COMMENT '权限标识（如 sys:user:add）',
+    `type` TINYINT NOT NULL COMMENT '1=目录 2=菜单 3=按钮 4=接口',
+    `path` VARCHAR(200) COMMENT '路由路径（菜单用）',
+    `component` VARCHAR(200) COMMENT '前端组件路径',
+    `icon` VARCHAR(100) COMMENT '图标',
+    `sort` INT DEFAULT 0 COMMENT '排序',
+    `visible` TINYINT NOT NULL DEFAULT 1 COMMENT '0=隐藏 1=可见',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=禁用 1=正常',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_parent_id` (`parent_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限表';
+
+-- 用户-角色关联表
+CREATE TABLE IF NOT EXISTS `sys_user_role` (
+    `user_id` BIGINT NOT NULL COMMENT '用户ID',
+    `role_id` BIGINT NOT NULL COMMENT '角色ID',
+    PRIMARY KEY (`user_id`, `role_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户角色关联表';
+
+-- 角色-权限关联表
+CREATE TABLE IF NOT EXISTS `sys_role_permission` (
+    `role_id` BIGINT NOT NULL COMMENT '角色ID',
+    `permission_id` BIGINT NOT NULL COMMENT '权限ID',
+    PRIMARY KEY (`role_id`, `permission_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色权限关联表';
+
+-- 操作日志表
+CREATE TABLE IF NOT EXISTS `sys_oper_log` (
+    `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+    `module` VARCHAR(50) COMMENT '操作模块',
+    `description` VARCHAR(200) COMMENT '操作描述',
+    `request_url` VARCHAR(500) COMMENT '请求URL',
+    `request_method` VARCHAR(10) COMMENT 'HTTP方法',
+    `request_params` TEXT COMMENT '请求参数',
+    `response_result` TEXT COMMENT '返回结果',
+    `status` TINYINT DEFAULT 1 COMMENT '0=失败 1=成功',
+    `error_msg` VARCHAR(2000) COMMENT '错误信息',
+    `oper_user_id` BIGINT COMMENT '操作人ID',
+    `oper_username` VARCHAR(50) COMMENT '操作人用户名',
+    `oper_ip` VARCHAR(50) COMMENT '操作IP',
+    `oper_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+    `cost_time` BIGINT COMMENT '耗时(ms)',
+    KEY `idx_oper_time` (`oper_time`),
+    KEY `idx_oper_user` (`oper_user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作日志表';
